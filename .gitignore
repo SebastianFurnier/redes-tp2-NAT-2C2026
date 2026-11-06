@@ -13,3 +13,4 @@ docs/*.fdb_latexmk
 docs/*.synctex.gz
 
 .vscode
+*.log
