@@ -65,6 +65,14 @@ En otra terminal, ejecutar:
 - Desde la CLI de Mininet:
     - Probar conectividad: `h2 ping -c 3 h1` y `h3 ping -c 3 h1`
 
+### Pruebas unitarias
+
+Desde la raíz del repositorio, ejecutar:
+
+```bash
+python3 -m unittest tests.unit.protorouter_test
+```
+
 ### Pruebas de NAT con múltiples conexiones (TCP/UDP)
 
 Abrir terminales por host:
