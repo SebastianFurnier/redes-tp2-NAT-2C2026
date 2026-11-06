@@ -26,6 +26,17 @@ from mininet.log import setLogLevel
 #  DG:  200.0.0.254                                                     DG:  192.168.1.254
 #  MAC: 00:00:00:00:00:01                                               MAC: 00:00:00:00:00:02
 #
+#                                                                    port 3
+#                                                                        ┌───────┐
+#                                                                        │       │
+#                                                                        │  h3   │
+#                                                                        └───────┘
+#                                                                       /       /
+#                                                                      ─────────
+#                                                                  IP:  192.168.1.3/24
+#                                                                  DG:  192.168.1.254
+#                                                                  MAC: 00:00:00:00:00:03
+#
 
 
 class NATTopo(Topo):
@@ -38,8 +49,12 @@ class NATTopo(Topo):
         h2 = self.addHost('h2', ip='192.168.1.2/24', mac='00:00:00:00:00:02',
                           defaultRoute='via 192.168.1.254')
 
+        h3 = self.addHost('h3', ip='192.168.1.3/24', mac='00:00:00:00:00:03',
+                          defaultRoute='via 192.168.1.254')
+
         self.addLink(h1, s1)
         self.addLink(h2, s1)
+        self.addLink(h3, s1)
 
 
 def run():
@@ -59,9 +74,8 @@ def run():
     s1.cmd("sysctl -w net.ipv6.conf.default.disable_ipv6=1")
     s1.cmd("sysctl -w net.ipv6.conf.lo.disable_ipv6=1")
 
-    # Entradas ARP para debug (TODO: Usar Protocolo ARP)
-    net.get('h1').setARP('200.0.0.254', '00:00:00:aa:aa:aa')
-    net.get('h2').setARP('192.168.1.254', '00:00:00:bb:bb:bb')
+    # Sin entradas ARP estáticas: la resolución de MACs es 100% dinámica
+    # (protocolo ARP) y la maneja el controlador.
 
     CLI(net)
     net.stop()
