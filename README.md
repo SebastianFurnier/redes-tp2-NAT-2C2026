@@ -3,7 +3,7 @@
 ### Ejecución del controlador
 
 Desde una terminal, ejecutar:  
-`python3 pox/pox.py [log.level --DEBUG] protorouter`
+`python3 pox/pox.py log.level --DEBUG protorouter`
 
 ### Ejecución de la topología
 
