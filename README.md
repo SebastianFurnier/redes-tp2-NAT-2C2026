@@ -21,3 +21,6 @@ En otra terminal, ejecutar:
 - Iniciar la red.
 - Desde la CLI de Mininet:
     - Probar conectividad: `h2 ping h1`
+
+### Documentación de POX:
+https://noxrepo.github.io/pox-doc/html/
