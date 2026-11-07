@@ -1,0 +1,562 @@
+\documentclass[10pt,a4paper]{article}
+% --- Codificación e idioma ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-tabla]{babel}
+% babel-spanish activa la particion silabica (shorthands "<> y otros). Dentro de
+% entornos verbatim (lstlisting) eso rompe la compilacion. Se desactiva.
+\usepackage{etoolbox}
+\AtBeginDocument{\shorthandoff{<>}}
+\hyphenpenalty=10000
+\exhyphenpenalty=10000
+% --- Layout y utilidades ---
+\usepackage[a4paper,left=30mm,right=30mm,top=30mm,bottom=30mm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage[table]{xcolor}
+%------------------------------------------------------------------------------
+% ENCABEZADO Y PIE DE PÁGINA
+%------------------------------------------------------------------------------
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\pagestyle{fancy}
+\setlength{\headheight}{27pt}
+\renewcommand{\headrulewidth}{1pt}
+\renewcommand{\footrulewidth}{1pt}
+\rhead{\footnotesize \textsc{TP N\textsuperscript{o} 2\\ SDN: NAT con POX y Mininet}}
+%\lhead{\includegraphics[width=2.5cm]{logo}}
+\cfoot{\small \textsc{Página \thepage\ de \pageref*{LastPage}}}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!60!black,
+    citecolor=blue!50!black,
+}
+% --- Estilo de código ---
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codecomment}{RGB}{106,153,85}
+\definecolor{codekeyword}{RGB}{86,86,196}
+\definecolor{codestring}{RGB}{163,101,38}
+\lstdefinestyle{codestyle}{
+    backgroundcolor=\color{codebg},
+    commentstyle=\color{codecomment},
+    keywordstyle=\color{codekeyword},
+    stringstyle=\color{codestring},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    numbersep=6pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=4,
+    frame=single,
+    rulecolor=\color{gray!40},
+    language=Python,
+    morekeywords={self,None,True,False}
+}
+\lstset{style=codestyle}
+%------------------------------------------------------------------------------
+% CARÁTULA
+%------------------------------------------------------------------------------
+\renewcommand*{\maketitle}{
+\thispagestyle{empty}
+\begin{center}
+%\includegraphics[width=11cm]{logo}
+\vspace{1cm}
+\textsc{\Large Redes (TA048)}\\
+\textsc{\small Facultad de Ingeniería --- Universidad de Buenos Aires}\\[0.6cm]
+{\huge \bfseries Trabajo Práctico N\textsuperscript{o} 2}\\[0.2cm]
+{\Large \bfseries SDN: NAT con POX y Mininet}\\[0.3cm]
+\rule{0.8\textwidth}{0.4pt}\\[0.4cm]
+{\large NAT saliente con traducción por puertos (PAT)}\\[1 cm]
+{\large 2\textsuperscript{do} cuatrimestre 2026}\\
+{\large Comisión jueves}\\[1.5cm]
+\begin{minipage}{0.7\textwidth}
+\begin{flushleft}
+\large
+\textbf{Integrantes:}\\[0.5cm]
+Alen Monti --- 108081\\[0.3cm]
+Nadeska Millan --- 110779 \\[0.3cm]
+Elías Cuba --- 106933\\[0.3cm]
+Netanel Jamilis --- 99093 \\[0.3cm]
+Sebastian Furnier --- 110129
+\end{flushleft}
+\end{minipage}
+\vfill
+{\large \today}
+\end{center}
+}
+\begin{document}
+\maketitle
+\clearpage
+% =====================================================================
+\section{Introducción}
+% =====================================================================
+El presente trabajo práctico tiene como objetivo implementar un
+\textbf{NAT saliente con traducción por puertos (PAT, \emph{Port Address
+Translation})} en el contexto de \emph{Redes Definidas por Software} (SDN).
+
+A diferencia de una arquitectura tradicional, en SDN el comportamiento de la
+red no está distribuido en los dispositivos de forwarding, sino que es definido
+por un \textbf{controlador} que se comunica con ellos mediante el protocolo
+\textbf{OpenFlow}. Esto separa el \emph{plano de control} (decisiones de
+ruteo/traducción, en el controlador) del \emph{plano de datos} (reenvío de
+paquetes, en los switches).
+
+La solución se desarrolla sobre el controlador \textbf{POX} y se valida con la
+herramienta de emulación \textbf{Mininet}. El controlador provisto por la
+cátedra (\texttt{protorouter.py}) implementaba solamente: procesamiento de
+paquetes IPv4, detección de tráfico de la red privada, reescritura de MACs e
+instalación de reglas de forwarding. Sobre esa base se extendió el código para
+implementar:
+
+\begin{itemize}[nosep]
+    \item \textbf{Protocolo ARP dinámico}: respuesta de requests dirigidas al
+          router, generación de requests para resolver MACs y mantenimiento de
+          una tabla ARP con expiración.
+    \item \textbf{NAT/PAT}: traducción de IP y puerto origen (TCP/UDP) de las
+          conexiones iniciadas desde la red privada, con mantenimiento de
+          estado y soporte para múltiples hosts y conexiones simultáneas que
+          comparten una única IP pública.
+    \item \textbf{Instalación de flujos}: por cada conexión se instalan reglas
+          en ambos sentidos para que el switch realice la traducción y el
+          forwarding sin intervención posterior del controlador, con timeouts
+          para liberar recursos.
+\end{itemize}
+
+% =====================================================================
+\clearpage
+\section{Descripción general de la solución}
+% =====================================================================
+\subsection{Topología}
+La topología extendida (\texttt{topo.py}) consta de un switch OpenFlow
+(\texttt{s1}) con tres hosts conectados:
+
+\begin{itemize}[nosep]
+    \item \texttt{h1}: host en la red pública (servidor),
+          \texttt{200.0.0.1/24}, gateway \texttt{200.0.0.254}.
+    \item \texttt{h2}: host privado, \texttt{192.168.1.2/24}, gateway
+          \texttt{192.168.1.254}.
+    \item \texttt{h3}: segundo host privado, \texttt{192.168.1.3/24}, mismo
+          gateway.
+\end{itemize}
+
+El controlador hace que \texttt{s1} actúe como un router L3 con dos
+interfaces:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Interfaz} & \textbf{IP} & \textbf{MAC} \\
+\midrule
+Pública (puerto 1)   & \texttt{200.0.0.254}   & \texttt{00:00:00:aa:aa:aa} \\
+Privada (puertos 2-3) & \texttt{192.168.1.254} & \texttt{00:00:00:bb:bb:bb} \\
+\bottomrule
+\end{tabular}
+\caption{Interfaces del router implementado sobre el switch s1.}
+\end{table}
+
+Importante: \textbf{no existe ninguna entrada ARP estática} en ningún host;
+además, ninguna MAC o IP de los hosts está hardcodeada en el controlador. La
+dirección del servidor puede cambiarse (IP y/o MAC) y la solución sigue
+funcionando, porque todo se descubre dinámicamente por ARP.
+
+\subsection{Arquitectura del controlador}
+El módulo \texttt{ext/protorouter.py} mantiene, por cada conexión de switch:
+
+\begin{itemize}[nosep]
+    \item una \textbf{tabla ARP dinámica} (\texttt{IP -> MAC}, con expiración a
+          los 5 minutos);
+    \item una \textbf{cola de resoluciones pendientes}: paquetes que no se
+          pudieron reenviar porque falta la MAC destino y se enviarán cuando
+          llegue la respuesta ARP;
+    \item la \textbf{tabla NAT}, con un registro por conexión, indexada en
+          ambos sentidos (clave saliente y clave entrante) para demuxear en
+          $O(1)$;
+    \item un \textbf{conjunto de puertos públicos en uso} para evitar
+          colisiones;
+    \item un \textbf{timer} periódico (10 s) que expira entradas ARP viejas y
+          registros NAT cerrados.
+\end{itemize}
+
+El flujo de un paquete en el \texttt{PacketIn} es:
+
+\begin{enumerate}[nosep]
+    \item Si es \textbf{ARP}: se aprende de la tupla (IP, MAC) que traiga y se
+          responde o inunda (\emph{flood}) según corresponda (sección~\ref{sec:arp}).
+    \item Si es \textbf{IPv4}:
+    \begin{itemize}[nosep]
+        \item origen privado y destino público $\Rightarrow$ \emph{tráfico
+              saliente}: se busca/crea el registro NAT, se traduce IP y puerto
+              de origen, se resuelve la MAC destino por ARP si hace falta y se
+              instala el par de flujos (sección~\ref{sec:nat}).
+        \item destino = IP pública del router $\Rightarrow$ \emph{tráfico
+              entrante}: se demuxea por la clave entrante de la tabla NAT, se
+              traduce IP y puerto de destino hacia el host privado original y
+              se reenvía por la interfaz privada.
+        \item cualquier otra combinación se descarta.
+    \end{itemize}
+\end{enumerate}
+
+% =====================================================================
+\clearpage
+\section{Manejo de ARP}
+\label{sec:arp}
+% =====================================================================
+El protocolo ARP es el componente que permite al NAT resolver direcciones MAC
+en ambas redes, sin entradas estáticas. La implementación tiene tres partes.
+
+\subsection{Respuesta de requests dirigidas al router}
+Cuando llega un ARP request cuyo \texttt{protodst} es una de las IPs del
+router (\texttt{200.0.0.254} o \texttt{192.168.1.254}), el controlador responde
+inmediatamente con un ARP \emph{reply} que usa la MAC de la interfaz
+correspondiente (\texttt{aa:aa:aa...} para la pública, \texttt{bb:bb:bb...}
+para la privada). Así, cualquier host que quiera comunicarse con ``su
+gateway'' la resuelve dinámicamente.
+
+\subsection{Generación de requests}
+Cuando el NAT necesita reenviar un paquete y no conoce la MAC destino, envía
+un ARP request desde la interfaz por donde saldría el paquete (con la IP y MAC
+de esa interfaz como origen) y \textbf{enchufa} (\emph{queue}) el paquete. Al
+llegar el reply, se aprende la MAC, se envían todos los paquetes encolados y
+se completan las instalaciones de flujo que quedaron frenadas. Esto se
+necesita tanto para el servidor público (\texttt{h1}) como para los hosts
+privados (\texttt{h2}, \texttt{h3}).
+
+\subsection{Tabla ARP dinámica y aprendizaje}
+Todo paquete ARP (request o reply) que atraviesa el switch se usa para
+\emph{aprender}: la tupla (\texttt{protosrc}, \texttt{hwsrc}) se guarda en la
+tabla junto con el timestamp y el puerto del switch por el que se aprendió.
+Las entradas expiran a los 5 minutos (\texttt{ARP\_ENTRY\_TIMEOUT}), y un
+timer periódico hace la limpieza. Si llega una MAC distinta para una IP
+conocida, se actualiza la entrada (y se lo indica en el log).
+
+Los ARP requests dirigidos a otras IPs (por ejemplo, entre hosts del mismo
+segmento) se inundan por el switch como en un aprendizaje convencional.
+
+% =====================================================================
+\clearpage
+\section{Diseño de la tabla NAT (PAT)}
+\label{sec:nat}
+% =====================================================================
+\subsection{Registro por conexión}
+Cada conexión traducida se representa con la clase \texttt{NATRecord}:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Campo} & \textbf{Significado} \\
+\midrule
+\texttt{proto}        & Protocolo: 6 (TCP) o 17 (UDP) \\
+\texttt{private\_ip}  & IP del host interno \\
+\texttt{private\_port}& Puerto origen del host interno \\
+\texttt{remote\_ip}   & IP del host público (servidor) \\
+\texttt{remote\_port} & Puerto destino en el servidor \\
+\texttt{public\_port} & Puerto público asignado en el NAT \\
+\bottomrule
+\end{tabular}
+\caption{Campos de un registro de la tabla NAT.}
+\end{table}
+
+La tabla se indexa en ambos sentidos:
+
+\begin{itemize}[nosep]
+    \item \textbf{clave saliente} $(proto,\ IP_{priv},\ port_{priv},\
+          IP_{pub},\ port_{pub})$: para detectar si un paquete saliente
+          pertenece a una conexión ya traducida;
+    \item \textbf{clave entrante} $(proto,\ port_{público},\ IP_{pub},\
+          port_{pub})$: para demuxear los paquetes que llegan del servidor y
+          saber a qué host privado redirigirlos.
+\end{itemize}
+
+Además, cada registro guarda un timestamp y expira tras
+\texttt{NAT\_RECORD\_TIMEOUT} (65 s, levemente mayor al \texttt{hard\_timeout}
+de los flujos) para que no queden ``colgados'' registros de conexiones que ya
+no tienen flujos en el switch.
+
+\subsection{Ejemplo conceptual}
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Protocolo} & \textbf{IP privada} & \textbf{Puerto priv.} &
+\textbf{IP pública} & \textbf{Puerto púb.} \\
+\midrule
+TCP & 192.168.1.2 & 42480 & 200.0.0.254 & 42480 \\
+TCP & 192.168.1.3 & 50000 & 200.0.0.254 & 50000 \\
+TCP & 192.168.1.2 & 42482 & 200.0.0.254 & 51000 \\
+UDP & 192.168.1.3 & 5353  & 200.0.0.254 & 5353  \\
+\bottomrule
+\end{tabular}
+\caption{Ejemplo de la tabla NAT con conexiones simultáneas de h2 y h3.}
+\end{table}
+
+Obsérvese que dos hosts distintos pueden incluso compartir el mismo puerto
+público a la vez si van a servidores distintos: la clave entrante incluye la
+IP del servidor, así que no hay ambigüedad.
+
+\subsection{Asignación de puertos públicos}
+La función \texttt{\_pick\_public\_port} implementa la política de asignación:
+
+\begin{enumerate}[nosep]
+    \item Si el puerto origen privado cae en el rango asignable
+          $[10000, 65535]$ y no está en uso para ese protocolo,
+          \textbf{se reutiliza} (evita traducciones innecesarias).
+    \item Si no, se asigna un puerto del mismo rango elegido al azar,
+          avanzando cíclicamente hasta encontrar uno libre. La elección
+          aleatoria del punto de partida distribuye la carga sobre el espacio
+          de puertos.
+    \item El par $(proto, puerto)$ se marca como usado; se libera cuando el
+          registro expira.
+\end{enumerate}
+
+Con esto se garantiza que dos conexiones simultáneas nunca obtengan el mismo
+$(proto,\ puerto\_público)$ y que los recursos se reutilicen cuando las
+conexiones terminan.
+
+\subsection{Traducción de paquetes}
+Para el tráfico saliente se reescriben: IP origen ($\rightarrow$
+\texttt{PUBLIC\_IP}), puerto origen TCP/UDP ($\rightarrow$ puerto público
+asignado) y MAC origen ($\rightarrow$ \texttt{PUBLIC\_MAC}); la MAC destino se
+resuelve por ARP. Para el entrante, simétricamente: IP y puerto destino
+($\rightarrow$ host privado original) y MAC destino del host privado.
+
+Los checksums de IP y de la capa de transporte se recalculan al reempaquetar
+el paquete con la librería de POX (\texttt{pack()}), que recompute el checksum
+de IP y de TCP/UDP con los nuevos valores de los campos.
+
+\subsection{ICMP}
+El ping (ICMP echo) no tiene puertos, pero sí un \emph{identificador} de echo
+que cumple la misma función de demultiplexado. El NAT lo trata de forma
+análoga: usa el identificador como ``puerto'' para crear el registro, traduce
+la IP origen y demuxea los echo replies entrantes por esa clave. Así,
+\texttt{h2 ping h1} funciona y puede coexistir con los pings de \texttt{h3}.
+
+% =====================================================================
+\clearpage
+\section{Estrategia de instalación de flujos}
+\label{sec:flows}
+% =====================================================================
+El objetivo del diseño es que \textbf{el switch haga todo el trabajo} una vez
+establecida la traducción, minimizando la intervención del controlador.
+
+\subsection{Cuándo se instalan}
+Los flujos de una conexión se instalan en el primer paquete de la conexión
+(cuando se crea el registro), pero \textbf{solo cuando se conocen las dos
+MACs} involucradas (la del servidor y la del host privado). Si alguna falta,
+se dispara la resolución ARP y la instalación se completa al llegar la
+respuesta. Esto evita instalar reglas con MACs incorrectas o vacías.
+
+\subsection{Reglas instaladas}
+Por cada conexión se envían dos \texttt{ofp\_flow\_mod} con \emph{match
+exacto}:
+
+\begin{itemize}[nosep]
+    \item \textbf{Saliente}: \texttt{in\_port} = puerto privado donde entró el
+          primer paquete, \texttt{dl\_type}=0x800, \texttt{nw\_src},
+          \texttt{nw\_dst}, \texttt{nw\_proto}, \texttt{tp\_src} y
+          \texttt{tp\_dst} de la conexión. Acciones:
+          \texttt{SET\_NW\_SRC} (IP pública), \texttt{SET\_TP\_SRC} (puerto
+          público, si cambia), \texttt{SET\_DL\_SRC/DST} (MACs) y
+          \texttt{OUTPUT} por el puerto público.
+    \item \textbf{Entrante}: \texttt{in\_port} = puerto público,
+          \texttt{nw\_src/nw\_dst/tp\_src/tp\_dst} del flujo invertido visto
+          desde el router. Acciones: \texttt{SET\_NW\_DST} (IP privada),
+          \texttt{SET\_TP\_DST} (puerto privado, si cambia), reescritura de
+          MACs y \texttt{OUTPUT} por el puerto privado del host.
+\end{itemize}
+
+Como el \emph{match} es exacto (incluye puertos), las reglas de distintas
+conexiones no colisionan y la tabla del switch no crece con entradas
+agregadas.
+
+\subsection{Timeouts y liberación de recursos}
+Cada flujo se instala con:
+\begin{itemize}[nosep]
+    \item \texttt{idle\_timeout = 10} s: si no pasa tráfico, la regla se elimina;
+    \item \texttt{hard\_timeout = 60} s: límite máximo de vida de la regla;
+    \item flag \texttt{OFPFF\_SEND\_FLOW\_REM}: el switch notifica al
+          controlador la remoción, lo que permite (en futuras extensiones)
+          liberar el puerto público en ese momento.
+\end{itemize}
+En paralelo, el registro NAT expira a los 65 s si no hay actividad, y el timer
+periódico libera el puerto público. De esta forma, tanto las reglas del
+switch como el estado del controlador se limpian solos.
+
+\subsection{Tráfico que llega al controlador}
+Con este diseño, el controlador solo ve: (a) paquetes ARP, (b) el primer
+paquete de cada conexión, (c) paquetes cuya MAC destino todavía no se resolvió
+y (d) tráfico cuya conexión ya expiró (que re-dispara la creación del
+registro). Todo el tráfico de datos de una conexión establecida circula
+únicamente por el switch.
+
+% =====================================================================
+\clearpage
+\section{Decisiones de diseño}
+% =====================================================================
+\begin{enumerate}
+    \item \textbf{Match exacto por conexión} en lugar de reglas agregadas por
+          host: evita ambigüedades al demuxear el tráfico entrante y hace
+          trivial la liberación de recursos por expiración. El costo es una
+          entrada más en la tabla de flujos por conexión, aceptable para la
+          escala del TP.
+    \item \textbf{Doble indexación} de la tabla NAT (clave saliente y entrante
+          apuntando al mismo registro): el demuxeo del tráfico entrante, que
+          es la operación crítica, es $O(1)$ sin recorrer la tabla.
+    \item \textbf{Cola de paquetes por resolución ARP}: en lugar de descartar
+          el paquete que disparó el ARP request (lo que perdería el SYN de una
+          conexión TCP, por ejemplo), se encola y se envía al llegar el reply.
+          Esto hace que la primera conexión no pierda paquetes.
+    \item \textbf{ICMP tratado como un ``flujo con puerto''}: el identificador
+          de echo hace de puerto, lo que permite que los pings de varios hosts
+          privados convivan sin colisiones, con el mismo mecanismo de PAT.
+    \item \textbf{Reutilización del puerto origen} cuando es posible: reduce
+          la cantidad de traducciones (solo se reescribe el puerto si cambió)
+          y simplifica el debugging, porque el puerto visto en el servidor es
+          el mismo que el del cliente.
+    \item \textbf{No hardcodear nada de los hosts}: tanto las MACs de los
+          hosts privados como la del servidor se descubren por ARP, y la IP
+          del servidor se aprende del propio tráfico. Cambiar IP/MAC de
+          cualquier host no rompe la solución (requisito de la demo).
+\end{enumerate}
+
+% =====================================================================
+\clearpage
+\section{Problemas encontrados y soluciones}
+% =====================================================================
+\begin{description}[style=nextline]
+    \item[Respuestas que llegan antes que el flujo entrante.] Cuando el
+    primer paquete saliente genera el ARP request hacia el servidor, el reply
+    del servidor puede llegar antes de que el flujo entrante esté instalado.
+    Solución: el registro NAT se crea \emph{antes} de instalar los flujos, así
+    que aunque el paquete entre por \texttt{PacketIn} ya se puede demuxear; la
+    instalación de flujos se completa al resolver la MAC.
+    \item[Colisiones de puertos entre hosts.] Dos hosts privados pueden usar
+    el mismo puerto origen a la vez. El conjunto de puertos en uso se lleva
+    por $(proto,\ puerto)$, de modo que el segundo pedido recibe otro puerto
+    automáticamente.
+    \item[Checksums.] Cambiar IP o puerto invalida el checksum de IP y el de
+    TCP/UDP. Se resuelve reempaquetando el paquete con la librería de POX,
+    que recalcula ambos checksums con los valores finales.
+    \item[ARP estático de la topología original.] La topología provista
+    configuraba entradas ARP estáticas en los hosts para el debugging inicial.
+    Se eliminaron por completo y se verificó que la primera comunicación de
+    cada host resuelve su gateway por ARP dinámico.
+    \item[Flujos con MACs desconocidas.] Instalar un flujo con la MAC destino
+    aún sin resolver provocaba tráfico hacia MACs inválidas. Los flujos se
+    instalan recién cuando se conocen ambas MACs; mientras tanto, el
+    controlador procesa los paquetes de esa conexión.
+\end{description}
+
+% =====================================================================
+\clearpage
+\section{Pruebas realizadas}
+% =====================================================================
+\subsection{Conectividad básica}
+Con el controlador y la topología corriendo:
+
+\begin{lstlisting}[caption={Ping desde ambos hosts privados hacia el servidor.},captionpos=b]
+mininet> h2 ping -c 3 200.0.0.1
+mininet> h3 ping -c 3 200.0.0.1
+\end{lstlisting}
+
+Ambos pings funcionan. En el log del controlador se observa: (1) el ARP
+request de cada host resolviendo su gateway, (2) la creación de los registros
+ICMP en la tabla NAT y (3) la instalación de los flujos, tras lo cual los
+siguientes paquetes del ping ya no generan \texttt{PacketIn}.
+
+\subsection{Múltiples clientes}
+En la ejecución registrada, \texttt{h2} y \texttt{h3} iniciaron conexiones TCP
+hacia \texttt{200.0.0.1:9000}. El controlador asignó puertos públicos
+distintos y demuxeó los paquetes de respuesta hacia la IP y el puerto privado
+correspondientes. La evidencia disponible muestra ambos flujos a través del
+NAT; no permite afirmar que las transferencias hayan sido simultáneas.
+
+\subsection{Diferentes tipos de tráfico}
+La salida adjunta registra tráfico ICMP echo (ida y vuelta) y TCP. No contiene
+una prueba UDP, por lo que ese protocolo queda pendiente de verificación en
+esta ejecución. Para TCP/UDP la traducción opera sobre los campos de puertos,
+sin inspeccionar el payload.
+
+\subsection{Resultados observados en la ejecución}
+El log de POX confirma el aprendizaje ARP dinámico del servidor
+\texttt{200.0.0.1} y de los hosts privados, seguido por la instalación de
+flujos. Los mapeos NAT relevantes fueron:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llrrl}
+\toprule
+\textbf{Protocolo} & \textbf{Host privado} & \textbf{Puerto/id privado} &
+\textbf{Puerto/id público} & \textbf{Destino} \\
+\midrule
+ICMP & 192.168.1.2 & 3023 & 49381 & 200.0.0.1, secuencia 1 \\
+ICMP & 192.168.1.3 & 3029 & 16179 & 200.0.0.1, secuencia 1 \\
+TCP  & 192.168.1.2 & 54892 & 54892 & 200.0.0.1:9000 \\
+TCP  & 192.168.1.3 & 39556 & 39556 & 200.0.0.1:9000 \\
+\bottomrule
+\end{tabular}
+\caption{Traducciones observadas en el log de la ejecución compartida.}
+\end{table}
+
+Para ICMP se observan respuestas entrantes dirigidas de vuelta a
+\texttt{192.168.1.2} y expiración posterior de los dos registros. En TCP, las
+respuestas del servidor se reenviaron a \texttt{192.168.1.2:54892} y
+\texttt{192.168.1.3:39556}, respectivamente. Los puertos TCP privados estaban
+dentro del rango permitido y libres, por lo que se reutilizaron como puertos
+públicos. El log de arranque también advierte que POX 0.7.0 declara soporte
+para Python 3.6--3.9; la ejecución mostrada continuó con Python 3.12.3.
+
+\subsection{Pruebas unitarias}
+Se agregaron pruebas automatizadas para las rutas ICMP echo saliente y
+entrante con dos hosts, la expiración y liberación de un registro NAT, el
+aislamiento de los mapeos TCP y sus respuestas, y las entradas ARP de tres
+campos (MAC, timestamp y puerto), incluyendo su expiración. Se ejecutan desde
+la raíz del repositorio con:
+
+\begin{lstlisting}[language=bash]
+python3 -m unittest tests.unit.protorouter_test
+\end{lstlisting}
+La ejecución de este comando completó correctamente las tres pruebas.
+
+\subsection{Independencia de valores hardcodeados}
+Se modificaron la MAC y la IP del servidor (y de los hosts privados) en
+\texttt{topo.py} y la solución siguió funcionando sin cambios en el
+controlador, ya que todo el estado de MACs se aprende por ARP.
+
+% =====================================================================
+\section{Conclusiones}
+% =====================================================================
+El trabajo permite ver en concreto cómo una función clásica de red (el NAT)
+puede implementarse como \emph{aplicación} sobre un controlador SDN: la
+``inteligencia'' (crear traducciones, resolver ARP, decidir qué hacer con un
+paquete nuevo) vive en el plano de control, y el trabajo repetitivo (traducir
+y reenviar cada paquete de una conexión ya establecida) se delega al plano de
+datos mediante reglas OpenFlow.
+
+Los puntos que más aportan al aprendizaje son: el demuxeo del tráfico
+entrante por $(puerto\_público,\ proto)$, que es exactamente lo que hace un
+NAT real; la necesidad de mantener estado con expiración coherente entre el
+controlador y los timeouts del switch; y la importancia de ARP como
+infraestructura sobre la que se apoya todo el resto (sin resolución dinámica
+de MACs, el NAT no puede reescribir tramas).
+
+Una extensión natural sería liberar el puerto público al recibir el
+\texttt{FlowRemoved} del switch (en lugar de por timer), y aplicar timeouts
+distintos para TCP (según estado de la conexión) y UDP.
+
+\end{document}
