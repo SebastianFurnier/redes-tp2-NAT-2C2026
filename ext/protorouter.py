@@ -3,6 +3,7 @@ from pox.core import core                       # Main POX object
 import pox.openflow.libopenflow_01 as of        # OpenFlow 1.0 library
 from pox.lib.addresses import EthAddr, IPAddr   # Address types
 from pox.lib.packet.ethernet import ethernet
+from pox.lib.packet.arp import arp
 
 log = core.getLogger()
 RED = "\033[31m"
@@ -39,6 +40,8 @@ class ProtoRouter(object):
 
         if event.parsed.type == ethernet.IP_TYPE:
             self.handle_ip(event)
+        elif event.parsed.type == ethernet.ARP_TYPE:
+            self.handle_arp(event)
         else:
             log_color(YELLOW, f"Paquete ignorado: protocolo distinto de IPv4.")
 
@@ -98,6 +101,40 @@ class ProtoRouter(object):
         else:
             log_color(RED, f"NO MATCH: {ip_pkt.srcip} no pertenece a {PRIVATE_SUBNET}/{PRIVATE_MASK}")
 
+    def handle_arp(self, event):
+        packet = event.parsed
+        arp_pkt = packet.payload
+
+        if arp_pkt.opcode != arp.REQUEST:
+            return
+
+        if arp_pkt.protodst == PRIVATE_IP:
+            router_mac = PRIVATE_MAC
+        elif arp_pkt.protodst == PUBLIC_IP:
+            router_mac = PUBLIC_MAC
+        else:
+            return
+
+        arp_reply = arp()
+        arp_reply.opcode = arp.REPLY
+        arp_reply.hwsrc = router_mac
+        arp_reply.protosrc = arp_pkt.protodst   
+        arp_reply.hwdst = arp_pkt.hwsrc
+        arp_reply.protodst = arp_pkt.protosrc
+
+        ether = ethernet()
+        ether.type = ethernet.ARP_TYPE
+        ether.src = router_mac
+        ether.dst = arp_pkt.hwsrc
+        ether.payload = arp_reply
+
+        msg = of.ofp_packet_out()
+        msg.data = ether.pack()
+        msg.actions.append(of.ofp_action_output(port=event.port))
+        self.connection.send(msg)
+
+        log_color(GREEN, f"ARP REPLY: {arp_reply.protosrc} is-at {router_mac} → {arp_reply.protodst} (port {event.port})")
+        
 
 def launch():
 
