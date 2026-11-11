@@ -4,6 +4,8 @@ import pox.openflow.libopenflow_01 as of        # OpenFlow 1.0 library
 from pox.lib.addresses import EthAddr, IPAddr   # Address types
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.arp import arp
+from arp_table import ArpTable
+from pox.lib.recoco import Timer
 
 log = core.getLogger()
 RED = "\033[31m"
@@ -31,6 +33,9 @@ H1_MAC = EthAddr("00:00:00:00:00:01")       # MAC del host externo (TODO: resolv
 class ProtoRouter(object):
     def __init__(self, connection):
         self.connection = connection
+        self.arp_table = ArpTable()
+
+        Timer(5, self.arp_table.clean_expired_entries, recurring=True)
         connection.addListeners(self)
 
     def _handle_PacketIn(self, event):
@@ -43,7 +48,7 @@ class ProtoRouter(object):
         elif event.parsed.type == ethernet.ARP_TYPE:
             self.handle_arp(event)
         else:
-            log_color(YELLOW, f"Paquete ignorado: protocolo distinto de IPv4.")
+            log_color(YELLOW, f"Paquete ignorado: protocolo no soportado.")
 
     def handle_ip(self, event):
         packet = event.parsed
@@ -104,6 +109,9 @@ class ProtoRouter(object):
     def handle_arp(self, event):
         packet = event.parsed
         arp_pkt = packet.payload
+
+        self.arp_table.learn(arp_pkt.protosrc, arp_pkt.hwsrc, event.port)
+        log_color(..., str(self.arp_table))
 
         if arp_pkt.opcode != arp.REQUEST:
             return
