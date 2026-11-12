@@ -6,6 +6,7 @@ from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.arp import arp
 from arp_table import ArpTable
 from pox.lib.recoco import Timer
+from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST, ETHER_ANY
 
 log = core.getLogger()
 RED = "\033[31m"
@@ -25,15 +26,15 @@ PRIVATE_IP = IPAddr("192.168.1.254")        # IP del router en la red privada
 PUBLIC_IP = IPAddr("200.0.0.254")           # IP del router en la red pública
 PUBLIC_MAC = EthAddr("00:00:00:aa:aa:aa")   # MAC del router hacia la red pública
 PRIVATE_MAC = EthAddr("00:00:00:bb:bb:bb")  # MAC del router hacia la red privada
-PUBLIC_PORT = 1                             # Puerto del switch conectado a la red pública
-
-H1_MAC = EthAddr("00:00:00:00:00:01")       # MAC del host externo (TODO: resolver mediante ARP)
+PUBLIC_SUBNET = IPAddr("200.0.0.0")
+PUBLIC_MASK = 24
 
 
 class ProtoRouter(object):
     def __init__(self, connection):
         self.connection = connection
         self.arp_table = ArpTable()
+        self.pending = {}
 
         Timer(5, self.arp_table.clean_expired_entries, recurring=True)
         connection.addListeners(self)
@@ -63,46 +64,13 @@ class ProtoRouter(object):
 
             log_color(GREEN, f"MATCH: {ip_pkt.srcip} pertenece a la red privada {PRIVATE_SUBNET}/{PRIVATE_MASK}")
 
-            # Instalar Flujo Saliente
-            fm = of.ofp_flow_mod()
-            fm.idle_timeout = 10
+            entry = self.arp_table.lookup(ip_pkt.dstip)
 
-            # Filtro (Saliente)
-            fm.match.nw_src = ip_pkt.srcip
-            fm.match.dl_type = 0x800  # IPv4
-            fm.match.in_port = in_port
+            if entry is None:
+                self.enqueue_and_resolve(ip_pkt.dstip, packet, in_port)
+                return
 
-            # Acción (Saliente)
-            fm.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
-            fm.actions.append(of.ofp_action_dl_addr.set_dst(H1_MAC))
-            fm.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
-            self.connection.send(fm)
-
-            # Instalar Flujo Entrante (para respuesta)
-            fm_back = of.ofp_flow_mod()
-            fm_back.idle_timeout = 10
-
-            # Filtro (Entrante)
-            fm_back.match.nw_src = ip_pkt.dstip
-            fm_back.match.nw_dst = ip_pkt.srcip
-            fm_back.match.dl_type = 0x800  # IPv4
-            fm_back.match.in_port = PUBLIC_PORT
-
-            # Acción (Entrante)
-            fm_back.actions.append(of.ofp_action_dl_addr.set_src(PRIVATE_MAC))
-            fm_back.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
-            fm_back.actions.append(of.ofp_action_output(port=in_port))
-            self.connection.send(fm_back)
-
-            # Reenviar paquete actual con MACs actualizadas (Los posteriores pasan por flujo)
-            packet.src = PUBLIC_MAC
-            packet.dst = H1_MAC
-            msg = of.ofp_packet_out()
-            msg.data = packet.pack()
-            msg.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
-            log_color(CYAN, f"ENVIANDO: {ip_pkt.srcip} → {ip_pkt.dstip} | MAC: {PUBLIC_MAC} → {H1_MAC} | Out Port: {PUBLIC_PORT}")
-            self.connection.send(msg)
-
+            self.forward_outbound(packet, in_port, entry)
         else:
             log_color(RED, f"NO MATCH: {ip_pkt.srcip} no pertenece a {PRIVATE_SUBNET}/{PRIVATE_MASK}")
 
@@ -111,7 +79,7 @@ class ProtoRouter(object):
         arp_pkt = packet.payload
 
         self.arp_table.learn(arp_pkt.protosrc, arp_pkt.hwsrc, event.port)
-        log_color(..., str(self.arp_table))
+        self.flush_pending(arp_pkt.protosrc)
 
         if arp_pkt.opcode != arp.REQUEST:
             return
@@ -143,6 +111,91 @@ class ProtoRouter(object):
 
         log_color(GREEN, f"ARP REPLY: {arp_reply.protosrc} is-at {router_mac} → {arp_reply.protodst} (port {event.port})")
         
+    def enqueue_and_resolve(self, ip, packet, in_port):
+        if ip in self.pending:
+            self.pending[ip].append((packet, in_port))
+            log_color(YELLOW, f"ENCOLADO (request ya pendiente): {ip} | {len(self.pending[ip])} en cola")
+            return
+
+        self.pending[ip] = [(packet, in_port)]
+        log_color(YELLOW, f"ENCOLADO: {ip} sin entrada ARP")
+        self.send_arp_request(ip)
+
+    def send_arp_request(self, ip):
+        if ip.inNetwork(PUBLIC_SUBNET, PUBLIC_MASK):
+            src_ip, src_mac = PUBLIC_IP, PUBLIC_MAC
+        elif ip.inNetwork(PRIVATE_SUBNET, PRIVATE_MASK):
+            src_ip, src_mac = PRIVATE_IP, PRIVATE_MAC
+        else:
+            log_color(RED, f"ARP: {ip} no pertenece a ninguna red conectada")
+            return
+
+        arp_req = arp()
+        arp_req.opcode = arp.REQUEST
+        arp_req.hwsrc = src_mac
+        arp_req.hwdst = ETHER_ANY
+        arp_req.protosrc = src_ip
+        arp_req.protodst = ip
+
+        ether = ethernet()
+        ether.type = ethernet.ARP_TYPE
+        ether.src = src_mac
+        ether.dst = ETHER_BROADCAST
+        ether.payload = arp_req
+
+        msg = of.ofp_packet_out()
+        msg.data = ether.pack()
+        msg.actions.append(of.ofp_action_output(port=of.OFPP_FLOOD))
+        self.connection.send(msg)
+
+        log_color(CYAN, f"ARP REQUEST: who-has {ip} tell {src_ip}")
+
+    def flush_pending(self, ip):
+        packets = self.pending.pop(ip, None)
+        if not packets:
+            return
+
+        entry = self.arp_table.lookup(ip)
+        log_color(GREEN, f"DESENCOLANDO: {len(packets)} paquete(s) hacia {ip}")
+        for packet, in_port in packets:
+            self.forward_outbound(packet, in_port, entry)
+
+    def forward_outbound(self, packet, in_port, entry):
+        ip_pkt = packet.payload
+
+        # Flujo saliente
+        fm = of.ofp_flow_mod()
+        fm.idle_timeout = 10
+        fm.match.dl_type = 0x800
+        fm.match.nw_src = ip_pkt.srcip
+        fm.match.in_port = in_port
+        fm.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
+        fm.actions.append(of.ofp_action_dl_addr.set_dst(entry.mac))
+        fm.actions.append(of.ofp_action_output(port=entry.port))
+        self.connection.send(fm)
+
+        # Flujo entrante (respuesta)
+        fm_back = of.ofp_flow_mod()
+        fm_back.idle_timeout = 10
+        fm_back.match.dl_type = 0x800
+        fm_back.match.nw_src = ip_pkt.dstip
+        fm_back.match.nw_dst = ip_pkt.srcip
+        fm_back.match.in_port = entry.port
+        fm_back.actions.append(of.ofp_action_dl_addr.set_src(PRIVATE_MAC))
+        fm_back.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
+        fm_back.actions.append(of.ofp_action_output(port=in_port))
+        self.connection.send(fm_back)
+
+        # Paquete actual
+        packet.src = PUBLIC_MAC
+        packet.dst = entry.mac
+        msg = of.ofp_packet_out()
+        msg.data = packet.pack()
+        msg.actions.append(of.ofp_action_output(port=entry.port))
+        self.connection.send(msg)
+
+        log_color(CYAN, f"ENVIANDO: {ip_pkt.srcip} → {ip_pkt.dstip} | "
+                        f"MAC: {PUBLIC_MAC} → {entry.mac} | Out Port: {entry.port}")
 
 def launch():
 
