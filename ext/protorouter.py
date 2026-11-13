@@ -123,12 +123,11 @@ class ProtoRouter(object):
 
         if ip in self.pending:
             self.pending[ip].append(callback)
-            self.pending_time[ip] = time.time()
-            
             log_color(YELLOW, f"ENCOLADO (request ya pendiente): {ip} | {len(self.pending[ip])} en cola")
             return
 
         self.pending[ip] = [callback]
+        self.pending_time[ip] = time.time()
         log_color(YELLOW, f"ENCOLADO: {ip} sin entrada ARP")
         self.send_arp_request(ip)
 
