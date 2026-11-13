@@ -33,10 +33,3 @@ class ArpTable(object):
         expired = [ip for ip, entry in self.entries.items() if entry.is_expired()]
         for ip in expired:
             del self.entries[ip]
-
-    def __str__(self):
-        lines = []
-        for ip, e in self.entries.items():
-            restante = max(0, int(ARP_TIMEOUT - (time.time() - e.timestamp)))
-            lines.append(f"  {ip} -> {e.mac} (port {e.port}, expira en {restante}s)")
-        return "Tabla ARP:\n" + ("\n".join(lines) if lines else "  (vacía)")
