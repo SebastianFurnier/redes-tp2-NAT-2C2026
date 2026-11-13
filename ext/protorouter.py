@@ -6,7 +6,8 @@ from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.arp import arp
 from arp_table import ArpTable
 from pox.lib.recoco import Timer
-from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST, ETHER_ANY
+from pox.lib.packet.ethernet import ETHER_BROADCAST, ETHER_ANY
+import time
 
 log = core.getLogger()
 RED = "\033[31m"
@@ -29,16 +30,20 @@ PRIVATE_MAC = EthAddr("00:00:00:bb:bb:bb")  # MAC del router hacia la red privad
 PUBLIC_SUBNET = IPAddr("200.0.0.0")
 PUBLIC_MASK = 24
 
+PENDING_TIMEOUT = 5
 
 class ProtoRouter(object):
     def __init__(self, connection):
         self.connection = connection
         self.arp_table = ArpTable()
         self.pending = {}
+        self.pending_time = {}
 
         Timer(5, self.arp_table.clean_expired_entries, recurring=True)
+        Timer(1, self.clean_expired_pending, recurring=True)
         connection.addListeners(self)
 
+    # Revisa la cabecera de ethernet para ver que tipo es.
     def _handle_PacketIn(self, event):
         if not event.parsed.parsed:
             log.warning("[DROP] PacketIn con trama no reconocida. POX no pudo decodificar el paquete.")
@@ -51,6 +56,10 @@ class ProtoRouter(object):
         else:
             log_color(YELLOW, f"Paquete ignorado: protocolo no soportado.")
 
+    # Revisa si el paquete IP tiene direccion de origen dentro de la red privada. Sino, lo descarta.
+    # Si esta en la red privada se fija si tiene la entrada ARP con la MAC del host destino.
+    # Si no tiene ninguna entrada lo encola para resolverlo despues.
+    # Si tiene la direccion MAC del host destino, lo envia con forward_outbound.
     def handle_ip(self, event):
         packet = event.parsed
         ip_pkt = packet.payload
@@ -74,6 +83,7 @@ class ProtoRouter(object):
         else:
             log_color(RED, f"NO MATCH: {ip_pkt.srcip} no pertenece a {PRIVATE_SUBNET}/{PRIVATE_MASK}")
 
+    # Todo paquete ARP que llega, aprende su direccion MAC e IP para agregarlo a la tabla.
     def handle_arp(self, event):
         packet = event.parsed
         arp_pkt = packet.payload
@@ -113,7 +123,9 @@ class ProtoRouter(object):
         
     def enqueue_and_resolve(self, ip, packet, in_port):
         if ip in self.pending:
-            self.pending[ip].append((packet, in_port))
+            self.pending[ip].append((packet, in_port, time.time()))
+            self.pending_time[ip] = time.time()
+            
             log_color(YELLOW, f"ENCOLADO (request ya pendiente): {ip} | {len(self.pending[ip])} en cola")
             return
 
@@ -152,21 +164,29 @@ class ProtoRouter(object):
 
     def flush_pending(self, ip):
         packets = self.pending.pop(ip, None)
+        self.pending_time.pop(ip, None)
+
         if not packets:
             return
 
         entry = self.arp_table.lookup(ip)
         log_color(GREEN, f"DESENCOLANDO: {len(packets)} paquete(s) hacia {ip}")
         for packet, in_port in packets:
-            self.forward_outbound(packet, in_port, entry)
+            if packet.payload.srcip.inNetwork(PRIVATE_SUBNET, PRIVATE_MASK):
+                self.forward_outbound(packet, in_port, entry)
+            else:
+                self.forward_inbound(packet, in_port, entry)
 
     def forward_outbound(self, packet, in_port, entry):
         ip_pkt = packet.payload
 
         # Flujo saliente
+        # Todo sintaxis de POX.
+        # Crea un nuevo flujo (las reglas que va a instalar en el switch).
+        # Le pone un timeout para que venza despues de 10s.  
         fm = of.ofp_flow_mod()
         fm.idle_timeout = 10
-        fm.match.dl_type = 0x800
+        fm.match.dl_type = 0x800 # Esto significa que es IPv4
         fm.match.nw_src = ip_pkt.srcip
         fm.match.in_port = in_port
         fm.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
@@ -196,6 +216,38 @@ class ProtoRouter(object):
 
         log_color(CYAN, f"ENVIANDO: {ip_pkt.srcip} → {ip_pkt.dstip} | "
                         f"MAC: {PUBLIC_MAC} → {entry.mac} | Out Port: {entry.port}")
+
+    # Reenvía un paquete que llega desde la red pública hacia un host de la red privada.
+    # entry: entrada ARP del host privado destino (MAC y puerto del switch).
+    # Por ahora solo reescribe las MAC y envía el paquete actual. Falta la parte de NAT.
+    def forward_inbound(self, packet, in_port, entry):
+        ip_pkt = packet.payload
+
+        # TODO (NAT): traducir IP y puerto destino (IP pública:puerto público → IP privada:puerto privado)
+        # según la tabla NAT, si el paquete no llegó ya traducido.
+
+        # TODO (NAT): instalar el flujo entrante en el switch para que los próximos paquetes
+        # de esta conexión no lleguen al controlador.
+
+        # Paquete actual
+        packet.src = PRIVATE_MAC
+        packet.dst = entry.mac
+        msg = of.ofp_packet_out()
+        msg.data = packet.pack()
+        msg.actions.append(of.ofp_action_output(port=entry.port))
+        self.connection.send(msg)
+
+        log_color(CYAN, f"ENVIANDO (entrante): {ip_pkt.srcip} → {ip_pkt.dstip} | "
+                        f"MAC: {PRIVATE_MAC} → {entry.mac} | Out Port: {entry.port}")
+
+    def clean_expired_pending(self):
+        now = time.time()
+        expired = [ip for ip, t in self.pending_time.items() if now - t > PENDING_TIMEOUT]
+
+        for ip in expired:
+            packets = self.pending.pop(ip, [])
+            del self.pending_time[ip]
+            log_color(RED, f"PENDIENTE VENCIDO: {ip} sin respuesta ARP | {len(packets)} paquete(s) descartado(s)")
 
 def launch():
 
