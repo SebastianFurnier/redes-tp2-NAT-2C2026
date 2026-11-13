@@ -5,6 +5,7 @@ from pox.lib.addresses import EthAddr, IPAddr   # Address types
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.arp import arp
 from arp_table import ArpTable
+from nat_table import NatTable
 from pox.lib.recoco import Timer
 from pox.lib.packet.ethernet import ETHER_BROADCAST, ETHER_ANY
 import time
@@ -36,6 +37,7 @@ class ProtoRouter(object):
     def __init__(self, connection):
         self.connection = connection
         self.arp_table = ArpTable()
+        self.nat_table = NatTable()
         self.pending = {}
         self.pending_time = {}
 
@@ -56,10 +58,6 @@ class ProtoRouter(object):
         else:
             log_color(YELLOW, f"Paquete ignorado: protocolo no soportado.")
 
-    # Revisa si el paquete IP tiene direccion de origen dentro de la red privada. Sino, lo descarta.
-    # Si esta en la red privada se fija si tiene la entrada ARP con la MAC del host destino.
-    # Si no tiene ninguna entrada lo encola para resolverlo despues.
-    # Si tiene la direccion MAC del host destino, lo envia con forward_outbound.
     def handle_ip(self, event):
         packet = event.parsed
         ip_pkt = packet.payload
@@ -70,18 +68,21 @@ class ProtoRouter(object):
             f"MAC: {packet.src} → {packet.dst} | In Port: {in_port}")
 
         if ip_pkt.srcip.inNetwork(PRIVATE_SUBNET, PRIVATE_MASK):
-
-            log_color(GREEN, f"MATCH: {ip_pkt.srcip} pertenece a la red privada {PRIVATE_SUBNET}/{PRIVATE_MASK}")
-
-            entry = self.arp_table.lookup(ip_pkt.dstip)
-
-            if entry is None:
-                self.enqueue_and_resolve(ip_pkt.dstip, packet, in_port)
-                return
-
-            self.forward_outbound(packet, in_port, entry)
+            self.handle_outbound(event)
         else:
-            log_color(RED, f"NO MATCH: {ip_pkt.srcip} no pertenece a {PRIVATE_SUBNET}/{PRIVATE_MASK}")
+            self.handle_inbound(event)
+
+    def handle_outbound(self, event):
+        packet = event.parsed
+        ip_pkt = packet.payload
+        in_port = event.port
+
+        log_color(GREEN, f"MATCH: {ip_pkt.srcip} pertenece a la red privada {PRIVATE_SUBNET}/{PRIVATE_MASK}")
+        self.resolve(ip_pkt.dstip, lambda entry: self.forward_outbound(packet, in_port, entry))
+
+    def handle_inbound(self, event):
+        ip_pkt = event.parsed.payload
+        log_color(RED, f"NO MATCH: {ip_pkt.srcip} no pertenece a {PRIVATE_SUBNET}/{PRIVATE_MASK}")
 
     # Todo paquete ARP que llega, aprende su direccion MAC e IP para agregarlo a la tabla.
     def handle_arp(self, event):
@@ -121,15 +122,19 @@ class ProtoRouter(object):
 
         log_color(GREEN, f"ARP REPLY: {arp_reply.protosrc} is-at {router_mac} → {arp_reply.protodst} (port {event.port})")
         
-    def enqueue_and_resolve(self, ip, packet, in_port):
+    def resolve(self, ip, callback):
+        entry = self.arp_table.lookup(ip)
+        if entry is not None:
+            callback(entry)
+            return
+
         if ip in self.pending:
-            self.pending[ip].append((packet, in_port, time.time()))
-            self.pending_time[ip] = time.time()
-            
+            self.pending[ip].append(callback)
             log_color(YELLOW, f"ENCOLADO (request ya pendiente): {ip} | {len(self.pending[ip])} en cola")
             return
 
-        self.pending[ip] = [(packet, in_port)]
+        self.pending[ip] = [callback]
+        self.pending_time[ip] = time.time()
         log_color(YELLOW, f"ENCOLADO: {ip} sin entrada ARP")
         self.send_arp_request(ip)
 
@@ -163,19 +168,16 @@ class ProtoRouter(object):
         log_color(CYAN, f"ARP REQUEST: who-has {ip} tell {src_ip}")
 
     def flush_pending(self, ip):
-        packets = self.pending.pop(ip, None)
+        callbacks = self.pending.pop(ip, None)
         self.pending_time.pop(ip, None)
 
-        if not packets:
+        if not callbacks:
             return
 
         entry = self.arp_table.lookup(ip)
-        log_color(GREEN, f"DESENCOLANDO: {len(packets)} paquete(s) hacia {ip}")
-        for packet, in_port in packets:
-            if packet.payload.srcip.inNetwork(PRIVATE_SUBNET, PRIVATE_MASK):
-                self.forward_outbound(packet, in_port, entry)
-            else:
-                self.forward_inbound(packet, in_port, entry)
+        log_color(GREEN, f"DESENCOLANDO: {len(callbacks)} paquete(s) hacia {ip}")
+        for callback in callbacks:
+            callback(entry)
 
     def forward_outbound(self, packet, in_port, entry):
         ip_pkt = packet.payload
@@ -245,9 +247,9 @@ class ProtoRouter(object):
         expired = [ip for ip, t in self.pending_time.items() if now - t > PENDING_TIMEOUT]
 
         for ip in expired:
-            packets = self.pending.pop(ip, [])
+            callbacks = self.pending.pop(ip, [])
             del self.pending_time[ip]
-            log_color(RED, f"PENDIENTE VENCIDO: {ip} sin respuesta ARP | {len(packets)} paquete(s) descartado(s)")
+            log_color(RED, f"PENDIENTE VENCIDO: {ip} sin respuesta ARP | {len(callbacks)} paquete(s) descartado(s)")
 
 def launch():
 
