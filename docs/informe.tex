@@ -316,7 +316,7 @@ def resolve(self, ip, callback):
 \end{lstlisting}
 
 El llamador entrega una función (por ejemplo
-\texttt{lambda e: self.forward\_outbound(...)}) y se desentiende del resto. Si
+\texttt{lambda e: self.forward\_outgoing(...)}) y se desentiende del resto. Si
 la MAC ya se conoce, el \emph{callback} se ejecuta en el acto; si no, se encola
 y se dispara un único ARP request por IP, aunque haya varios paquetes
 esperando. Al llegar la respuesta, \texttt{flush\_pending} ejecuta todos los
@@ -339,7 +339,7 @@ se arranca una espera.
 \section{Diseño de la tabla NAT (PAT)}
 % =====================================================================
 \subsection{Registro por conexión}
-Cada conexión traducida se representa con la clase \texttt{NATRecord}:
+Cada conexión traducida se representa con la clase \texttt{NatEntry}:
 
 \begin{table}[H]
 \centering
@@ -353,7 +353,6 @@ Cada conexión traducida se representa con la clase \texttt{NATRecord}:
 \texttt{remote\_ip}    & IP del host público (servidor) \\
 \texttt{remote\_port}  & Puerto destino en el servidor (o identificador ICMP) \\
 \texttt{public\_port}  & Puerto público asignado en el router \\
-\texttt{in\_port}      & Puerto del switch por donde entra el tráfico privado \\
 \texttt{flows\_installed} & Indica si las reglas de la conexión ya están en el switch \\
 \bottomrule
 \end{tabular}
@@ -389,8 +388,8 @@ chica:
 \texttt{add(proto, ip, port, ip\_rem, port\_rem)} &
   Crea la traducción si no existe y devuelve su entrada. Es idempotente: dos
   paquetes de la misma conexión obtienen el mismo registro. \\
-\texttt{lookup\_outbound(...)} & Busca por la clave de ida. \\
-\texttt{lookup\_inbound(...)} & Busca por la clave de vuelta (la que usan los
+\texttt{lookup\_outgoing(...)} & Busca por la clave de ida. \\
+\texttt{lookup\_incoming(...)} & Busca por la clave de vuelta (la que usan los
   paquetes que vuelven del servidor). \\
 \texttt{release(entry)} & Borra la entrada de ambos índices y libera el puerto
   público. \\
@@ -404,8 +403,8 @@ chica:
 El punto importante es que la asignación de puerto y la inserción en los dos
 índices ocurren en una sola operación atómica: no existe forma de crear el
 registro de ida sin que quede también el de vuelta, ni de liberar uno dejando
-el otro. La clase \texttt{NatEntry} expone \texttt{outbound\_key()} e
-\texttt{inbound\_key()} para que los índices se construyan del mismo modo en
+el otro. La clase \texttt{NatEntry} expone \texttt{outgoing\_key()} e
+\texttt{incoming\_key()} para que los índices se construyan del mismo modo en
 todo el código.
 
 \subsection{Asignación de puertos públicos}
@@ -539,9 +538,8 @@ descartara se perdería, por ejemplo, el SYN de una conexión TCP. Por eso:
           reenvía con \texttt{ofp\_packet\_out};
     \item si falta la MAC destino, el paquete se encola \emph{ya traducido} en
           la cola de pendientes y se envía cuando llega la respuesta ARP;
-    \item al desencolarse, el paquete se vuelve a clasificar y sigue el camino
-          normal, de modo que también se completan los flujos que habían
-          quedado frenados.
+    \item los flujos que habían quedado frenados se completan con el próximo
+          paquete de la conexión que llegue al controlador.
 \end{itemize}
 
 % =====================================================================

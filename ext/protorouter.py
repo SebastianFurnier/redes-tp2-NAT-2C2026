@@ -8,8 +8,10 @@ from pox.lib.packet.icmp import echo as icmp_echo
 from pox.lib.recoco import Timer
 try:
     from arp_table import ArpTable          # cuando corre dentro de POX
+    from nat_table import NatTable
 except ImportError:                         # cuando se importa como ext.*
     from ext.arp_table import ArpTable
+    from ext.nat_table import NatTable
 from pox.lib.packet.ethernet import ETHER_BROADCAST, ETHER_ANY
 import time
 
@@ -41,10 +43,6 @@ PENDING_TIMEOUT = 5
 FLOW_IDLE_TIMEOUT = 10                      # Timeout de inactividad de flujos
 FLOW_HARD_TIMEOUT = 60                      # Timeout duro de flujos
 
-# Rango de puertos públicos a asignar (PAT)
-NAT_PORT_MIN = 10000
-NAT_PORT_MAX = 65535
-
 # Protocolos de transporte
 ICMP_PROTO = 1
 TCP_PROTO = 6
@@ -58,60 +56,21 @@ DIRECTION_OUTGOING = "outgoing"             # privado -> público
 DIRECTION_INCOMING = "incoming"             # público -> IP pública
 DIRECTION_OTHER = "other"                   # se descarta
 
-class NATRecord(object):
-    """
-    Un registro de la tabla NAT: describe una conexión traducida.
-
-    Campos:
-      - proto        : 1 (ICMP), 6 (TCP) o 17 (UDP)
-      - private_ip   : IPAddr del host interno
-      - private_port : puerto origen del host interno (o id ICMP)
-      - remote_ip    : IPAddr del host público
-      - remote_port  : puerto destino en el host público (o id ICMP)
-      - public_port  : puerto público asignado en el router (PAT)
-      - in_port      : puerto del switch por donde entra el tráfico privado
-    """
-
-    def __init__(self, proto, private_ip, private_port, remote_ip,
-                 remote_port, public_port, in_port):
-        self.proto = proto
-        self.private_ip = private_ip
-        self.private_port = private_port
-        self.remote_ip = remote_ip
-        self.remote_port = remote_port
-        self.public_port = public_port
-        self.in_port = in_port
-        self.flows_installed = False
-
-    def outgoing_key(self):
-        """Clave con la que se indexa el tráfico de ida."""
-        return (self.proto, self.private_ip, self.private_port,
-                self.remote_ip, self.remote_port)
-
-    def incoming_key(self):
-        """Clave con la que se indexa el tráfico de vuelta."""
-        return (self.proto, self.public_port, self.remote_ip,
-                self.remote_port)
-
-    def __str__(self):
-        name = {ICMP_PROTO: "ICMP", TCP_PROTO: "TCP",
-                UDP_PROTO: "UDP"}.get(self.proto, str(self.proto))
-        return (f"{name} {self.private_ip}:{self.private_port} -> "
-                f"{PUBLIC_IP}:{self.public_port} <-> "
-                f"{self.remote_ip}:{self.remote_port}")
+def describe(record):
+    name = {ICMP_PROTO: "ICMP", TCP_PROTO: "TCP",
+            UDP_PROTO: "UDP"}.get(record.proto, str(record.proto))
+    return (f"{name} {record.private_ip}:{record.private_port} -> "
+            f"{PUBLIC_IP}:{record.public_port} <-> "
+            f"{record.remote_ip}:{record.remote_port}")
 
 
 class ProtoRouter(object):
     def __init__(self, connection):
         self.connection = connection
         self.arp_table = ArpTable()
+        self.nat_table = NatTable()
         self.pending = {}
         self.pending_time = {}
-
-        # Tabla NAT indexada en ambos sentidos
-        self._nat_by_outgoing = {}   # outgoing_key() -> NATRecord
-        self._nat_by_incoming = {}   # incoming_key() -> NATRecord
-        self._used_ports = set()     # (proto, puerto público) en uso
 
         Timer(5, self.arp_table.clean_expired_entries, recurring=True)
         Timer(1, self.clean_expired_pending, recurring=True)
@@ -214,15 +173,19 @@ class ProtoRouter(object):
 
         log_color(GREEN, f"ARP REPLY: {arp_reply.protosrc} is-at {router_mac} → {arp_reply.protodst} (port {event.port})")
         
-    def enqueue_and_resolve(self, ip, packet, in_port):
+    def resolve(self, ip, callback):
+        entry = self.arp_table.lookup(ip)
+        if entry is not None:
+            callback(entry)
+            return
+
         if ip in self.pending:
-            self.pending[ip].append((packet, in_port, time.time()))
-            self.pending_time[ip] = time.time()
-            
+            self.pending[ip].append(callback)
             log_color(YELLOW, f"ENCOLADO (request ya pendiente): {ip} | {len(self.pending[ip])} en cola")
             return
 
-        self.pending[ip] = [(packet, in_port)]
+        self.pending[ip] = [callback]
+        self.pending_time[ip] = time.time()
         log_color(YELLOW, f"ENCOLADO: {ip} sin entrada ARP")
         self.send_arp_request(ip)
 
@@ -256,22 +219,16 @@ class ProtoRouter(object):
         log_color(CYAN, f"ARP REQUEST: who-has {ip} tell {src_ip}")
 
     def flush_pending(self, ip):
-        packets = self.pending.pop(ip, None)
+        callbacks = self.pending.pop(ip, None)
         self.pending_time.pop(ip, None)
 
-        if not packets:
+        if not callbacks:
             return
 
-        log_color(GREEN, f"DESENCOLANDO: {len(packets)} paquete(s) hacia {ip}")
-        for item in packets:
-            packet = item[0]
-            # El paquete se traduce recién ahora (antes no se sabía la MAC
-            # destino); si ya venía traducido, encontrarse a sí mismo como
-            # origen no hace nada.
-            if self._is_private(packet.payload.srcip):
-                self.handle_outgoing(packet)
-            else:
-                self.handle_incoming(packet)
+        entry = self.arp_table.lookup(ip)
+        log_color(GREEN, f"DESENCOLANDO: {len(callbacks)} paquete(s) hacia {ip}")
+        for callback in callbacks:
+            callback(entry)
 
     # ------------------------------------------------------------------
     #  Envío de paquetes
@@ -284,7 +241,7 @@ class ProtoRouter(object):
         msg.actions.append(of.ofp_action_output(port=out_port))
         self.connection.send(msg)
 
-    def _forward_packet_out(self, packet, out_port):
+    def _forward_packet_out(self, packet):
         """
         Reenvía por el switch un paquete ya traducido.  Si todavía no se
         conoce la MAC de destino, el paquete se encola hasta tenerla.
@@ -293,7 +250,8 @@ class ProtoRouter(object):
         dst_entry = self.arp_table.lookup(ip_pkt.dstip)
 
         if dst_entry is None:
-            self.enqueue_and_resolve(ip_pkt.dstip, packet, out_port)
+            self.resolve(ip_pkt.dstip,
+                         lambda _: self._forward_packet_out(packet))
             return
 
         packet.dst = dst_entry.mac
@@ -302,41 +260,6 @@ class ProtoRouter(object):
         log_color(CYAN, f"ENVIANDO: {ip_pkt.srcip} → {ip_pkt.dstip} | "
                         f"MAC: {packet.src} → {packet.dst} | "
                         f"Out Port: {dst_entry.port}")
-
-    # ------------------------------------------------------------------
-    #  Tabla NAT: asignación de puertos públicos
-    # ------------------------------------------------------------------
-
-    def _pick_public_port(self, proto, private_port):
-        """
-        Elige un puerto público libre, evitando colisiones entre conexiones
-        activas.  Se reutiliza el puerto original si ya está en el rango
-        asignable y está libre; si no, se busca uno libre en el rango.
-        Devuelve None si no quedan puertos.
-        """
-        if (NAT_PORT_MIN <= private_port <= NAT_PORT_MAX
-                and (proto, private_port) not in self._used_ports):
-            port = private_port
-        else:
-            # Barrido circular desde el puerto original: reparte los puertos
-            # y sigue siendo determinista (se puede testear).
-            port = None
-            span = NAT_PORT_MAX - NAT_PORT_MIN + 1
-            start = NAT_PORT_MIN + (private_port % span)
-            for i in range(span):
-                p = NAT_PORT_MIN + ((start - NAT_PORT_MIN + i) % span)
-                if (proto, p) not in self._used_ports:
-                    port = p
-                    break
-            if port is None:
-                log_color(RED, "NAT: ¡sin puertos públicos disponibles!")
-                return None
-        self._used_ports.add((proto, port))
-        return port
-
-    def _register_record(self, record):
-        self._nat_by_outgoing[record.outgoing_key()] = record
-        self._nat_by_incoming[record.incoming_key()] = record
 
     # ------------------------------------------------------------------
     #  Traducción: paquetes salientes
@@ -366,21 +289,19 @@ class ProtoRouter(object):
                            f"descartado")
             return
 
-        record = self._nat_by_outgoing.get(
-            (proto, ip_pkt.srcip, tp.srcport, ip_pkt.dstip, tp.dstport))
+        record = self.nat_table.lookup_outgoing(
+            proto, ip_pkt.srcip, tp.srcport, ip_pkt.dstip, tp.dstport)
         if record is None:
-            public_port = self._pick_public_port(proto, tp.srcport)
-            if public_port is None:
+            record = self.nat_table.add(
+                proto, ip_pkt.srcip, tp.srcport, ip_pkt.dstip, tp.dstport)
+            if record is None:
+                log_color(RED, "NAT: ¡sin puertos públicos disponibles!")
                 return
-            record = NATRecord(proto, ip_pkt.srcip, tp.srcport,
-                               ip_pkt.dstip, tp.dstport, public_port,
-                               PUBLIC_PORT)
-            self._register_record(record)
-            log_color(GREEN, f"NAT nueva conexión: {record}")
+            log_color(GREEN, f"NAT nueva conexión: {describe(record)}")
         else:
-            log_color(CYAN, f"NAT conexión existente: {record}")
+            log_color(CYAN, f"NAT conexión existente: {describe(record)}")
 
-        self.forward_outbound(packet, record)
+        self.forward_outgoing(packet, record)
 
     def _handle_outgoing_icmp(self, packet, ip_pkt, tp):
         """Ping saliente: solo se cambia la IP, el id de echo se mantiene."""
@@ -393,19 +314,17 @@ class ProtoRouter(object):
             log_color(RED, "ICMP echo malformado: descartado")
             return
 
-        record = self._nat_by_outgoing.get(
-            (ICMP_PROTO, ip_pkt.srcip, echo_pkt.id, ip_pkt.dstip,
-             echo_pkt.id))
+        record = self.nat_table.lookup_outgoing(
+            ICMP_PROTO, ip_pkt.srcip, echo_pkt.id, ip_pkt.dstip,
+            echo_pkt.id)
         if record is None:
-            record = NATRecord(ICMP_PROTO, ip_pkt.srcip, echo_pkt.id,
-                               ip_pkt.dstip, echo_pkt.id, echo_pkt.id,
-                               PUBLIC_PORT)
-            self._register_record(record)
-            log_color(GREEN, f"NAT nueva conexión (ping): {record}")
+            record = self.nat_table.add(ICMP_PROTO, ip_pkt.srcip, echo_pkt.id,
+                                        ip_pkt.dstip, echo_pkt.id)
+            log_color(GREEN, f"NAT nueva conexión (ping): {describe(record)}")
 
-        self.forward_outbound(packet, record)
+        self.forward_outgoing(packet, record)
 
-    def forward_outbound(self, packet, record):
+    def forward_outgoing(self, packet, record):
         """
         Traduce el paquete saliente: IP origen → IP pública (y puerto origen
         → puerto público en TCP/UDP) y lo manda al servidor.
@@ -418,7 +337,7 @@ class ProtoRouter(object):
         ip_pkt.srcip = PUBLIC_IP
         packet.src = PUBLIC_MAC
 
-        self._forward_packet_out(packet, PUBLIC_PORT)
+        self._forward_packet_out(packet)
 
         if not record.flows_installed:
             self.install_nat_flows(record)
@@ -440,13 +359,13 @@ class ProtoRouter(object):
             if not isinstance(echo_pkt, icmp_echo):
                 log_color(RED, "ICMP echo malformado: descartado")
                 return
-            record = self._nat_by_incoming.get(
-                (ICMP_PROTO, echo_pkt.id, ip_pkt.srcip, echo_pkt.id))
+            record = self.nat_table.lookup_incoming(
+                ICMP_PROTO, echo_pkt.id, ip_pkt.srcip, echo_pkt.id)
             if record is None:
                 log_color(RED, f"Descartado: sin entrada NAT para ping "
                                f"id={echo_pkt.id} desde {ip_pkt.srcip}")
                 return
-            self.forward_inbound(packet, record)
+            self.forward_incoming(packet, record)
             return
 
         if tp is None:
@@ -454,18 +373,18 @@ class ProtoRouter(object):
                            "(no se puede demuxear)")
             return
 
-        record = self._nat_by_incoming.get(
-            (proto, tp.dstport, ip_pkt.srcip, tp.srcport))
+        record = self.nat_table.lookup_incoming(
+            proto, tp.dstport, ip_pkt.srcip, tp.srcport)
         if record is None:
             log_color(RED, f"Descartado: sin entrada NAT para "
                            f"{ip_pkt.srcip}:{tp.srcport} → "
                            f"{PUBLIC_IP}:{tp.dstport}")
             return
 
-        log_color(CYAN, f"NAT conexión existente (entrada): {record}")
-        self.forward_inbound(packet, record)
+        log_color(CYAN, f"NAT conexión existente (entrada): {describe(record)}")
+        self.forward_incoming(packet, record)
 
-    def forward_inbound(self, packet, record):
+    def forward_incoming(self, packet, record):
         """
         Traduce el paquete entrante: IP destino → IP privada (y puerto
         destino → puerto privado en TCP/UDP) y lo entrega al host.
@@ -478,7 +397,7 @@ class ProtoRouter(object):
         ip_pkt.dstip = record.private_ip
         packet.src = PRIVATE_MAC
 
-        self._forward_packet_out(packet, self._private_port_of(record))
+        self._forward_packet_out(packet)
 
         if not record.flows_installed:
             self.install_nat_flows(record)
@@ -516,7 +435,7 @@ class ProtoRouter(object):
         fm_out.hard_timeout = FLOW_HARD_TIMEOUT
         fm_out.flags |= of.OFPFF_SEND_FLOW_REM
 
-        fm_out.match.in_port = self._private_port_of(record)
+        fm_out.match.in_port = private_entry.port
         fm_out.match.dl_type = ethernet.IP_TYPE
         fm_out.match.nw_src = record.private_ip
         fm_out.match.nw_dst = record.remote_ip
@@ -569,27 +488,16 @@ class ProtoRouter(object):
         self.connection.send(fm_in)
 
         record.flows_installed = True
-        log_color(GREEN, f"Flujos instalados para {record}")
-
-    def _private_port_of(self, record):
-        """
-        Puerto del switch hacia el host privado de la conexión.  Se aprende
-        de la tabla ARP (así h2, h3, ... pueden estar en cualquier puerto) y,
-        si todavía no se conoce, se usa el puerto por donde llegó el tráfico.
-        """
-        entry = self.arp_table.lookup(record.private_ip)
-        if entry is None:
-            return record.in_port
-        return entry.port
+        log_color(GREEN, f"Flujos instalados para {describe(record)}")
 
     def clean_expired_pending(self):
         now = time.time()
         expired = [ip for ip, t in self.pending_time.items() if now - t > PENDING_TIMEOUT]
 
         for ip in expired:
-            packets = self.pending.pop(ip, [])
+            callbacks = self.pending.pop(ip, [])
             del self.pending_time[ip]
-            log_color(RED, f"PENDIENTE VENCIDO: {ip} sin respuesta ARP | {len(packets)} paquete(s) descartado(s)")
+            log_color(RED, f"PENDIENTE VENCIDO: {ip} sin respuesta ARP | {len(callbacks)} paquete(s) descartado(s)")
 
 def launch():
 

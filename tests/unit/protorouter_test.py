@@ -48,8 +48,10 @@ from pox.lib.packet.udp import udp
 
 try:
     from arp_table import ARP_TIMEOUT, ArpTable
+    from nat_table import PORT_MAX, PORT_MIN, NatEntry, NatTable
 except ImportError:
     from ext.arp_table import ARP_TIMEOUT, ArpTable
+    from ext.nat_table import PORT_MAX, PORT_MIN, NatEntry, NatTable
 
 
 class FakeConnection(object):
@@ -77,9 +79,7 @@ def make_router():
     router = protorouter.ProtoRouter.__new__(protorouter.ProtoRouter)
     router.connection = FakeConnection()
     router.arp_table = ArpTable()
-    router._nat_by_outgoing = {}
-    router._nat_by_incoming = {}
-    router._used_ports = set()
+    router.nat_table = NatTable()
     router.pending = {}
     router.pending_time = {}
     # No queremos que los tests disparen ARP al aire
@@ -148,7 +148,7 @@ TEST_DESCRIPTIONS = {
     "test_record_is_registered_in_both_directions":
         "Tabla NAT: el registro se indexa en los dos sentidos",
     "test_keys":
-        "Tabla NAT: claves de ida y de vuelta del NATRecord",
+        "Tabla NAT: claves de ida y de vuelta del NatEntry",
     "test_arp_lookup_uses_mac_timestamp_and_port_entry":
         "ARP: la tabla devuelve MAC, puerto y expira por timestamp",
 }
@@ -191,9 +191,7 @@ class ProtoRouterNATTest(_LoggedTestCase):
     def setUp(self):
         self.router = make_router()
         self.router.arp_table = ArpTable()
-        self.router._nat_by_outgoing = {}
-        self.router._nat_by_incoming = {}
-        self.router._used_ports = set()
+        self.router.nat_table = NatTable()
         self.sent_packets = []
         self.router._send_packet_out = (
             lambda packet, out_port:
@@ -372,7 +370,7 @@ class ClassificationTest(ProtoRouterNATTest):
         self.router.handle_ip(event)
         self.assertEqual(self.router.connection.flow_mods(), [])
         self.assertEqual(self.router.connection.packet_outs(), [])
-        self.assertEqual(self.router._nat_by_outgoing, {})
+        self.assertEqual(self.router.nat_table.outgoing, {})
 
     def test_non_ip_non_arp_frame_is_ignored(self):
         frame = ethernet(type=0x88cc, src=EthAddr("00:00:00:00:00:09"),
@@ -389,14 +387,14 @@ class OutgoingTest(ProtoRouterNATTest):
                        protorouter.TCP_PROTO, in_port=2,
                        src_port=4321, dst_port=80)
 
-        record = self.router._nat_by_outgoing.get(
+        record = self.router.nat_table.outgoing.get(
             (protorouter.TCP_PROTO, IPAddr("192.168.1.2"), 4321,
              IPAddr("200.0.0.1"), 80))
         self.assertIsNotNone(record)
         self.assertGreaterEqual(record.public_port,
-                                protorouter.NAT_PORT_MIN)
+                                PORT_MIN)
         self.assertLessEqual(record.public_port,
-                             protorouter.NAT_PORT_MAX)
+                             PORT_MAX)
 
         frame, out_port = self.sent_packets[0]
         self.assertEqual(out_port, protorouter.PUBLIC_PORT)
@@ -413,7 +411,7 @@ class OutgoingTest(ProtoRouterNATTest):
                        protorouter.UDP_PROTO, in_port=3,
                        src_port=5555, dst_port=53)
 
-        record = self.router._nat_by_outgoing.get(
+        record = self.router.nat_table.outgoing.get(
             (protorouter.UDP_PROTO, IPAddr("192.168.1.3"), 5555,
              IPAddr("200.0.0.1"), 53))
         self.assertIsNotNone(record)
@@ -431,7 +429,7 @@ class OutgoingTest(ProtoRouterNATTest):
                        icmp_type=protorouter.ICMP_ECHO_REQUEST,
                        echo_id=3023, sequence=1)
 
-        record = self.router._nat_by_outgoing[
+        record = self.router.nat_table.outgoing[
             (protorouter.ICMP_PROTO, IPAddr("192.168.1.2"), 3023,
              IPAddr("200.0.0.1"), 3023)]
         self.assertEqual(record.public_port, 3023)
@@ -446,7 +444,7 @@ class OutgoingTest(ProtoRouterNATTest):
             self._outgoing("192.168.1.2", "200.0.0.1",
                            protorouter.TCP_PROTO, in_port=2,
                            src_port=40000, dst_port=80)
-        self.assertEqual(len(self.router._nat_by_outgoing), 1)
+        self.assertEqual(len(self.router.nat_table.outgoing), 1)
         self.assertEqual(len(self.sent_packets), 3)
         ports = {frame.find("tcp").srcport
                  for frame, _ in self.sent_packets}
@@ -466,7 +464,7 @@ class IncomingTest(ProtoRouterNATTest):
         self._outgoing("192.168.1.2", "200.0.0.1",
                        protorouter.TCP_PROTO, in_port=2,
                        src_port=4321, dst_port=80)
-        record = next(iter(self.router._nat_by_outgoing.values()))
+        record = next(iter(self.router.nat_table.outgoing.values()))
         self.sent_packets.clear()
 
         packet, _ = self._incoming("200.0.0.1", str(protorouter.PUBLIC_IP),
@@ -486,7 +484,7 @@ class IncomingTest(ProtoRouterNATTest):
         self._outgoing("192.168.1.3", "200.0.0.1",
                        protorouter.UDP_PROTO, in_port=3,
                        src_port=5555, dst_port=53)
-        record = next(iter(self.router._nat_by_outgoing.values()))
+        record = next(iter(self.router.nat_table.outgoing.values()))
         self.sent_packets.clear()
 
         self._incoming("200.0.0.1", str(protorouter.PUBLIC_IP),
@@ -545,7 +543,7 @@ class FlowInstallationTest(ProtoRouterNATTest):
         self._outgoing(src_ip, dst_ip, proto, in_port=in_port, **kwargs)
         flows = self.router.connection.flow_mods()
         self.assertEqual(len(flows), 2)
-        record = next(iter(self.router._nat_by_outgoing.values()))
+        record = next(iter(self.router.nat_table.outgoing.values()))
         return record, flows[0], flows[1]
 
     def test_tcp_installs_two_flow_mods(self):
@@ -655,7 +653,7 @@ class FirstPacketRawTest(ProtoRouterNATTest):
         self.assertEqual(out_port, protorouter.PUBLIC_PORT)
         self.assertEqual(forwarded.find("ipv4").srcip,
                          protorouter.PUBLIC_IP)
-        record = next(iter(self.router._nat_by_outgoing.values()))
+        record = next(iter(self.router.nat_table.outgoing.values()))
         self.assertEqual(forwarded.find("tcp").srcport,
                          record.public_port)
 
@@ -674,9 +672,9 @@ class ArpLookupTest(ProtoRouterNATTest):
 
 class NatRecordTest(unittest.TestCase):
     def test_keys(self):
-        record = protorouter.NATRecord(
+        record = NatEntry(
             protorouter.TCP_PROTO, IPAddr("192.168.1.2"), 4321,
-            IPAddr("200.0.0.1"), 80, 10001, 2)
+            IPAddr("200.0.0.1"), 80, 10001)
         self.assertEqual(record.outgoing_key(),
                          (protorouter.TCP_PROTO, IPAddr("192.168.1.2"), 4321,
                           IPAddr("200.0.0.1"), 80))
@@ -686,14 +684,13 @@ class NatRecordTest(unittest.TestCase):
 
     def test_record_is_registered_in_both_directions(self):
         router = make_router()
-        record = protorouter.NATRecord(
+        record = router.nat_table.add(
             protorouter.UDP_PROTO, IPAddr("192.168.1.2"), 4321,
-            IPAddr("200.0.0.1"), 80, 10001, 2)
-        router._register_record(record)
+            IPAddr("200.0.0.1"), 80)
 
-        self.assertIs(router._nat_by_outgoing[record.outgoing_key()],
+        self.assertIs(router.nat_table.outgoing[record.outgoing_key()],
                       record)
-        self.assertIs(router._nat_by_incoming[record.incoming_key()],
+        self.assertIs(router.nat_table.incoming[record.incoming_key()],
                       record)
 
 
