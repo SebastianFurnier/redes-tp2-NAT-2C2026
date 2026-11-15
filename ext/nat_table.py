@@ -11,48 +11,55 @@ class NatEntry(object):
         self.remote_ip = remote_ip
         self.remote_port = remote_port
         self.public_port = public_port
+        self.flows_installed = False
 
-    def outbound_key(self):
+    def outgoing_key(self):
         return (self.proto, self.private_ip, self.private_port, self.remote_ip, self.remote_port)
 
-    def inbound_key(self):
+    def incoming_key(self):
         return (self.proto, self.public_port, self.remote_ip, self.remote_port)
 
 
 class NatTable(object):
     def __init__(self):
-        self.outbound = {}
-        self.inbound = {}
+        self.outgoing = {}
+        self.incoming = {}
         self.used_ports = set()
 
     def add(self, proto, private_ip, private_port, remote_ip, remote_port):
         key = (proto, private_ip, private_port, remote_ip, remote_port)
-        if key in self.outbound:
-            return self.outbound[key]
+        if key in self.outgoing:
+            return self.outgoing[key]
 
-        public_port = private_port if proto == ICMP else self.free_port(proto)
+        if proto == ICMP or self.is_free(proto, private_port):
+            public_port = private_port
+        else:
+            public_port = self.free_port(proto)
         if public_port is None:
             return None
 
         entry = NatEntry(proto, private_ip, private_port, remote_ip, remote_port, public_port)
-        self.outbound[key] = entry
-        self.inbound[entry.inbound_key()] = entry
+        self.outgoing[key] = entry
+        self.incoming[entry.incoming_key()] = entry
         self.used_ports.add((proto, public_port))
         return entry
 
-    def lookup_outbound(self, proto, private_ip, private_port, remote_ip, remote_port):
-        return self.outbound.get((proto, private_ip, private_port, remote_ip, remote_port))
+    def lookup_outgoing(self, proto, private_ip, private_port, remote_ip, remote_port):
+        return self.outgoing.get((proto, private_ip, private_port, remote_ip, remote_port))
 
-    def lookup_inbound(self, proto, public_port, remote_ip, remote_port):
-        return self.inbound.get((proto, public_port, remote_ip, remote_port))
+    def lookup_incoming(self, proto, public_port, remote_ip, remote_port):
+        return self.incoming.get((proto, public_port, remote_ip, remote_port))
 
     def release(self, entry):
-        self.outbound.pop(entry.outbound_key(), None)
-        self.inbound.pop(entry.inbound_key(), None)
+        self.outgoing.pop(entry.outgoing_key(), None)
+        self.incoming.pop(entry.incoming_key(), None)
         self.used_ports.discard((entry.proto, entry.public_port))
+
+    def is_free(self, proto, port):
+        return PORT_MIN <= port <= PORT_MAX and (proto, port) not in self.used_ports
 
     def free_port(self, proto):
         for port in range(PORT_MIN, PORT_MAX + 1):
-            if (proto, port) not in self.used_ports:
+            if self.is_free(proto, port):
                 return port
         return None
