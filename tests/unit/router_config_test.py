@@ -86,6 +86,68 @@ class RouterConfigTest(unittest.TestCase):
         table.entries[IPAddr("200.0.0.1")].timestamp = time.time() - 3
         self.assertIsNone(table.lookup(IPAddr("200.0.0.1")))
 
+class _RouterTestCase(unittest.TestCase):
+    """Router con reglas reales, ARP precargada y envío de paquetes capturado."""
+
+    CONFIG = None
+
+    def setUp(self):
+        self.router = base.make_router()
+        if self.CONFIG is not None:
+            self.router.config = self.CONFIG
+            self.router.arp_table = ArpTable(self.CONFIG.arp_timeout)
+            self.router.nat_table = NatTable(self.CONFIG.port_min,
+                                             self.CONFIG.port_max)
+        self.sent = []
+        self.router._send_packet_out = (
+            lambda packet, out_port: self.sent.append((packet, out_port)))
+        self.cfg = self.router.config
+
+    def learn(self, ip, mac, port):
+        self.router.arp_table.learn(IPAddr(ip), EthAddr(mac), port)
+
+    def send(self, src, dst, proto, in_port, **kwargs):
+        frame = base._build_frame(src, dst, proto, **kwargs)
+        self.router.handle_ip(SimpleNamespace(parsed=frame, port=in_port,
+                                              ofp=frame.pack()))
+
+    def flows(self):
+        return self.router.connection.flow_mods()
+
+
+class ConfiguredRouterTest(_RouterTestCase):
+    CONFIG = RouterConfig(public_ip="10.0.0.254", public_mac="02:00:00:00:0a:01",
+                          public_subnet="10.0.0.0/24", public_port=4,
+                          private_ip="172.16.0.254",
+                          private_mac="02:00:00:00:0b:01",
+                          private_subnet="172.16.0.0/16",
+                          flow_idle_timeout=3, flow_hard_timeout=9)
+
+    def setUp(self):
+        super(ConfiguredRouterTest, self).setUp()
+        self.learn("10.0.0.1", "00:00:00:00:00:01", 4)
+        self.learn("172.16.5.7", "00:00:00:00:00:07", 2)
+
+    def test_classification_follows_the_configured_networks(self):
+        classify = self.router.classify_packet
+        self.assertEqual(classify(IPAddr("172.16.5.7"), IPAddr("10.0.0.1")), protorouter.DIRECTION_OUTGOING)
+        self.assertEqual(classify(IPAddr("10.0.0.1"), IPAddr("10.0.0.254")), protorouter.DIRECTION_INCOMING)
+        self.assertEqual(classify(IPAddr("192.168.1.2"), IPAddr("200.0.0.1")), protorouter.DIRECTION_OTHER)
+
+    def test_flows_use_configured_addresses_port_and_timeouts(self):
+        self.send("172.16.5.7", "10.0.0.1", TCP, 2, src_port=4000, dst_port=80)
+        out_flow, in_flow = self.flows()
+        self.assertEqual((out_flow.idle_timeout, out_flow.hard_timeout), (3, 9))
+        self.assertEqual((in_flow.idle_timeout, in_flow.hard_timeout), (3, 9))
+        self.assertEqual(out_flow.actions[0].nw_addr, IPAddr("10.0.0.254"))
+        self.assertEqual(out_flow.actions[2].dl_addr, EthAddr("02:00:00:00:0a:01"))
+        self.assertEqual(out_flow.actions[-1].port, 4)
+        self.assertEqual(in_flow.match.in_port, 4)
+        self.assertEqual(in_flow.match.nw_dst, IPAddr("10.0.0.254"))
+        self.assertEqual(in_flow.actions[2].dl_addr, EthAddr("02:00:00:00:0b:01"))
+
+    def test_default_config_of_another_router_is_not_modified(self):
+        self.assertEqual(protorouter.ProtoRouter.config.public_ip, IPAddr("200.0.0.254"))
 
 if __name__ == "__main__":
     unittest.main()

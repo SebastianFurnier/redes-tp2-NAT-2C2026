@@ -9,9 +9,11 @@ from pox.lib.recoco import Timer
 try:
     from arp_table import ArpTable          # cuando corre dentro de POX
     from nat_table import NatTable
+    from router_config import RouterConfig, ConfigError
 except ImportError:                         # cuando se importa como ext.*
     from ext.arp_table import ArpTable
     from ext.nat_table import NatTable
+    from ext.router_config import RouterConfig, ConfigError
 from pox.lib.packet.ethernet import ETHER_BROADCAST, ETHER_ANY
 import time
 
@@ -26,20 +28,22 @@ RESET = "\033[0m"
 def log_color(color, msg):
     log.info(f"{color}{msg}{RESET}")
 
+# Los valores de red y los tiempos viven en RouterConfig (router_config.py) y
+# se arman en launch() con los parámetros de arranque.  Estos nombres son solo los valores por defecto, que usan los tests.
+DEFAULT_CONFIG = RouterConfig()
+PRIVATE_SUBNET = DEFAULT_CONFIG.private_subnet
+PRIVATE_MASK = DEFAULT_CONFIG.private_mask
+PRIVATE_IP = DEFAULT_CONFIG.private_ip
+PUBLIC_IP = DEFAULT_CONFIG.public_ip
+PUBLIC_MAC = DEFAULT_CONFIG.public_mac
+PRIVATE_MAC = DEFAULT_CONFIG.private_mac
+PUBLIC_SUBNET = DEFAULT_CONFIG.public_subnet
+PUBLIC_MASK = DEFAULT_CONFIG.public_mask
+PUBLIC_PORT = DEFAULT_CONFIG.public_port
+PENDING_TIMEOUT = DEFAULT_CONFIG.pending_timeout
+FLOW_IDLE_TIMEOUT = DEFAULT_CONFIG.flow_idle_timeout
+FLOW_HARD_TIMEOUT = DEFAULT_CONFIG.flow_hard_timeout
 
-PRIVATE_SUBNET = IPAddr("192.168.1.0")      # Red interna
-PRIVATE_MASK = 24                           # Máscara de la red interna
-PRIVATE_IP = IPAddr("192.168.1.254")        # IP del router en la red privada
-PUBLIC_IP = IPAddr("200.0.0.254")           # IP del router en la red pública
-PUBLIC_MAC = EthAddr("00:00:00:aa:aa:aa")   # MAC del router hacia la red pública
-PRIVATE_MAC = EthAddr("00:00:00:bb:bb:bb")  # MAC del router hacia la red privada
-PUBLIC_SUBNET = IPAddr("200.0.0.0")
-PUBLIC_MASK = 24
-PUBLIC_PORT = 1                             # Puerto del switch hacia la red pública
-
-PENDING_TIMEOUT = 5
-
-# Timeouts (segundos) de las reglas
 FLOW_IDLE_TIMEOUT = 10                      # Timeout de inactividad de flujos
 FLOW_HARD_TIMEOUT = 60                      # Timeout duro de flujos
 
@@ -56,25 +60,25 @@ DIRECTION_OUTGOING = "outgoing"             # privado -> público
 DIRECTION_INCOMING = "incoming"             # público -> IP pública
 DIRECTION_OTHER = "other"                   # se descarta
 
-def describe(record):
-    name = {ICMP_PROTO: "ICMP", TCP_PROTO: "TCP",
-            UDP_PROTO: "UDP"}.get(record.proto, str(record.proto))
-    return (f"{name} {record.private_ip}:{record.private_port} -> "
-            f"{PUBLIC_IP}:{record.public_port} <-> "
-            f"{record.remote_ip}:{record.remote_port}")
-
-
 class ProtoRouter(object):
-    def __init__(self, connection):
+    config = DEFAULT_CONFIG
+    def __init__(self, connection, config=None):
+        if config is not None:
+            self.config = config
         self.connection = connection
-        self.arp_table = ArpTable()
-        self.nat_table = NatTable()
+        self.arp_table = ArpTable(self.config.arp_timeout)
+        self.nat_table = NatTable(self.config.port_min, self.config.port_max)
         self.pending = {}
         self.pending_time = {}
 
         Timer(5, self.arp_table.clean_expired_entries, recurring=True)
         Timer(1, self.clean_expired_pending, recurring=True)
         connection.addListeners(self)
+
+    def describe(self,record):
+        name = {ICMP_PROTO: "ICMP", TCP_PROTO: "TCP",UDP_PROTO: "UDP"}.get(record.proto, str(record.proto))
+        return (f"{name} {record.private_ip}:{record.private_port} -> "f"{self.config.public_ip}:{record.public_port} <-> "
+            f"{record.remote_ip}:{record.remote_port}")
 
     # Revisa la cabecera de ethernet para ver que tipo es.
     def _handle_PacketIn(self, event):
@@ -115,7 +119,7 @@ class ProtoRouter(object):
                            f"no cruza la frontera privada/pública. DROP")
 
     def _is_private(self, ip):
-        return ip.inNetwork(PRIVATE_SUBNET, PRIVATE_MASK)
+        return ip.inNetwork(self.config.private_subnet, self.config.private_mask)
 
     def classify_packet(self, src_ip, dst_ip):
         """
@@ -131,7 +135,7 @@ class ProtoRouter(object):
 
         if src_is_private and not dst_is_private:
             return DIRECTION_OUTGOING
-        if not src_is_private and not dst_is_private and dst_ip == PUBLIC_IP:
+        if not src_is_private and not dst_is_private and dst_ip == self.config.public_ip:
             return DIRECTION_INCOMING
         return DIRECTION_OTHER
 
@@ -146,10 +150,10 @@ class ProtoRouter(object):
         if arp_pkt.opcode != arp.REQUEST:
             return
 
-        if arp_pkt.protodst == PRIVATE_IP:
-            router_mac = PRIVATE_MAC
-        elif arp_pkt.protodst == PUBLIC_IP:
-            router_mac = PUBLIC_MAC
+        if arp_pkt.protodst == self.config.private_ip:
+            router_mac = self.config.private_mac
+        elif arp_pkt.protodst == self.config.public_ip:
+            router_mac = self.config.public_mac
         else:
             return
 
@@ -190,10 +194,10 @@ class ProtoRouter(object):
         self.send_arp_request(ip)
 
     def send_arp_request(self, ip):
-        if ip.inNetwork(PUBLIC_SUBNET, PUBLIC_MASK):
-            src_ip, src_mac = PUBLIC_IP, PUBLIC_MAC
-        elif ip.inNetwork(PRIVATE_SUBNET, PRIVATE_MASK):
-            src_ip, src_mac = PRIVATE_IP, PRIVATE_MAC
+        if ip.inNetwork(self.config.public_subnet, self.config.public_mask):
+            src_ip, src_mac = self.config.public_ip, self.config.public_mac
+        elif ip.inNetwork(self.config.private_subnet, self.config.private_mask):
+            src_ip, src_mac = self.config.private_ip, self.config.private_mac
         else:
             log_color(RED, f"ARP: {ip} no pertenece a ninguna red conectada")
             return
@@ -297,9 +301,9 @@ class ProtoRouter(object):
             if record is None:
                 log_color(RED, "NAT: ¡sin puertos públicos disponibles!")
                 return
-            log_color(GREEN, f"NAT nueva conexión: {describe(record)}")
+            log_color(GREEN, f"NAT nueva conexión: {self.describe(record)}")
         else:
-            log_color(CYAN, f"NAT conexión existente: {describe(record)}")
+            log_color(CYAN, f"NAT conexión existente: {self.describe(record)}")
 
         self.forward_outgoing(packet, record)
 
@@ -320,7 +324,7 @@ class ProtoRouter(object):
         if record is None:
             record = self.nat_table.add(ICMP_PROTO, ip_pkt.srcip, echo_pkt.id,
                                         ip_pkt.dstip, echo_pkt.id)
-            log_color(GREEN, f"NAT nueva conexión (ping): {describe(record)}")
+            log_color(GREEN, f"NAT nueva conexión (ping): {self.describe(record)}")
 
         self.forward_outgoing(packet, record)
 
@@ -334,8 +338,8 @@ class ProtoRouter(object):
 
         if proto != ICMP_PROTO and tp is not None:
             tp.srcport = record.public_port
-        ip_pkt.srcip = PUBLIC_IP
-        packet.src = PUBLIC_MAC
+        ip_pkt.srcip = self.config.public_ip
+        packet.src = self.config.public_mac
 
         self._forward_packet_out(packet)
 
@@ -378,10 +382,10 @@ class ProtoRouter(object):
         if record is None:
             log_color(RED, f"Descartado: sin entrada NAT para "
                            f"{ip_pkt.srcip}:{tp.srcport} → "
-                           f"{PUBLIC_IP}:{tp.dstport}")
+                           f"{self.config.public_ip}:{tp.dstport}")
             return
 
-        log_color(CYAN, f"NAT conexión existente (entrada): {describe(record)}")
+        log_color(CYAN, f"NAT conexión existente (entrada): {self.describe(record)}")
         self.forward_incoming(packet, record)
 
     def forward_incoming(self, packet, record):
@@ -395,7 +399,7 @@ class ProtoRouter(object):
         if proto != ICMP_PROTO and tp is not None:
             tp.dstport = record.private_port
         ip_pkt.dstip = record.private_ip
-        packet.src = PRIVATE_MAC
+        packet.src = self.config.private_mac
 
         self._forward_packet_out(packet)
 
@@ -431,8 +435,8 @@ class ProtoRouter(object):
 
         # -------- Regla de ida: privado → público --------
         fm_out = of.ofp_flow_mod()
-        fm_out.idle_timeout = FLOW_IDLE_TIMEOUT
-        fm_out.hard_timeout = FLOW_HARD_TIMEOUT
+        fm_out.idle_timeout = self.config.flow_idle_timeout
+        fm_out.hard_timeout = self.config.flow_hard_timeout
         fm_out.flags |= of.OFPFF_SEND_FLOW_REM
 
         fm_out.match.in_port = private_entry.port
@@ -448,26 +452,26 @@ class ProtoRouter(object):
             fm_out.match.tp_src = record.private_port
             fm_out.match.tp_dst = record.remote_port
 
-        fm_out.actions.append(of.ofp_action_nw_addr.set_src(PUBLIC_IP))
+        fm_out.actions.append(of.ofp_action_nw_addr.set_src(self.config.public_ip))
         if not is_icmp and record.public_port != record.private_port:
             fm_out.actions.append(
                 of.ofp_action_tp_port.set_src(record.public_port))
-        fm_out.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
+        fm_out.actions.append(of.ofp_action_dl_addr.set_src(self.config.public_mac))
         fm_out.actions.append(
             of.ofp_action_dl_addr.set_dst(remote_entry.mac))
-        fm_out.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
+        fm_out.actions.append(of.ofp_action_output(port=self.config.public_port))
         self.connection.send(fm_out)
 
         # -------- Regla de vuelta: público → privado --------
         fm_in = of.ofp_flow_mod()
-        fm_in.idle_timeout = FLOW_IDLE_TIMEOUT
-        fm_in.hard_timeout = FLOW_HARD_TIMEOUT
+        fm_in.idle_timeout = self.config.flow_idle_timeout
+        fm_in.hard_timeout = self.config.flow_hard_timeout
         fm_in.flags |= of.OFPFF_SEND_FLOW_REM
 
-        fm_in.match.in_port = PUBLIC_PORT
+        fm_in.match.in_port = self.config.public_port
         fm_in.match.dl_type = ethernet.IP_TYPE
         fm_in.match.nw_src = record.remote_ip
-        fm_in.match.nw_dst = PUBLIC_IP
+        fm_in.match.nw_dst = self.config.public_ip
         fm_in.match.nw_proto = proto
         if is_icmp:
             fm_in.match.tp_src = ICMP_ECHO_REPLY
@@ -480,7 +484,7 @@ class ProtoRouter(object):
         if not is_icmp and record.public_port != record.private_port:
             fm_in.actions.append(
                 of.ofp_action_tp_port.set_dst(record.private_port))
-        fm_in.actions.append(of.ofp_action_dl_addr.set_src(PRIVATE_MAC))
+        fm_in.actions.append(of.ofp_action_dl_addr.set_src(self.config.private_mac))
         fm_in.actions.append(
             of.ofp_action_dl_addr.set_dst(private_entry.mac))
         fm_in.actions.append(
@@ -488,21 +492,45 @@ class ProtoRouter(object):
         self.connection.send(fm_in)
 
         record.flows_installed = True
-        log_color(GREEN, f"Flujos instalados para {describe(record)}")
+        log_color(GREEN, f"Flujos instalados para {self.describe(record)}")
 
     def clean_expired_pending(self):
         now = time.time()
-        expired = [ip for ip, t in self.pending_time.items() if now - t > PENDING_TIMEOUT]
+        expired = [ip for ip, t in self.pending_time.items() if now - t > self.config.pending_timeout]
 
         for ip in expired:
             callbacks = self.pending.pop(ip, [])
             del self.pending_time[ip]
             log_color(RED, f"PENDIENTE VENCIDO: {ip} sin respuesta ARP | {len(callbacks)} paquete(s) descartado(s)")
 
-def launch():
+def launch(public_ip="200.0.0.254",
+           public_mac="00:00:00:aa:aa:aa",
+           public_subnet="200.0.0.0/24",
+           public_port=1,
+           private_ip="192.168.1.254",
+           private_mac="00:00:00:bb:bb:bb",
+           private_subnet="192.168.1.0/24",
+           port_min=10000,
+           port_max=65535,
+           flow_idle_timeout=10,
+           flow_hard_timeout=60,
+           pending_timeout=5,
+           arp_timeout=10):
+    config = RouterConfig(
+        public_ip=public_ip, public_mac=public_mac,
+        public_subnet=public_subnet, public_port=public_port,
+        private_ip=private_ip, private_mac=private_mac,
+        private_subnet=private_subnet,
+        port_min=port_min, port_max=port_max,
+        flow_idle_timeout=flow_idle_timeout,
+        flow_hard_timeout=flow_hard_timeout,
+        pending_timeout=pending_timeout, arp_timeout=arp_timeout)
+
+    for line in config.summary():
+        log_color(CYAN, f"CONFIG {line}")
 
     def start_switch(event):
         log_color(YELLOW, f"Iniciando ProtoRouter para Switch {event.connection.dpid}")
-        ProtoRouter(event.connection)
+        ProtoRouter(event.connection, config)
 
     core.openflow.addListenerByName("ConnectionUp", start_switch)
