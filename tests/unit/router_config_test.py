@@ -180,7 +180,6 @@ class FlowExpiryTest(_RouterTestCase):
         self.assertTrue(self.router.nat_table.is_free(TCP, record.public_port))
 
     def test_one_live_rule_keeps_the_connection(self):
-        """Un stream que solo va en un sentido no pierde su puerto."""
         record = self.connect()
         out_flow, _in_flow = self.flows()
         self.expire(out_flow, IDLE)
@@ -259,7 +258,6 @@ class FlowExpiryTest(_RouterTestCase):
         out_flow, in_flow = self.flows()
         for flow in (out_flow, in_flow):
             self.expire(flow, IDLE)
-        # Un aviso duplicado o tardío no rompe nada ni libera de más
         other = self.connect("192.168.1.3", port=3, src_port=7777)
         self.expire(out_flow, IDLE)
         self.assertIn(other, self.router.nat_table.outgoing.values())
