@@ -12,6 +12,9 @@ class NatEntry(object):
         self.remote_port = remote_port
         self.public_port = public_port
         self.flows_installed = False
+        self.flows_alive = 0
+        self.cold_since = None
+        
 
     def outgoing_key(self):
         return (self.proto, self.private_ip, self.private_port, self.remote_ip, self.remote_port)
@@ -21,7 +24,11 @@ class NatEntry(object):
 
 
 class NatTable(object):
-    def __init__(self):
+
+    # Los valores por defecto son las constantes de siempre (10000 y 65535).
+    def __init__(self, port_min=PORT_MIN, port_max=PORT_MAX):
+        self.port_min = port_min
+        self.port_max = port_max
         self.outgoing = {}
         self.incoming = {}
         self.used_ports = set()
@@ -56,10 +63,10 @@ class NatTable(object):
         self.used_ports.discard((entry.proto, entry.public_port))
 
     def is_free(self, proto, port):
-        return PORT_MIN <= port <= PORT_MAX and (proto, port) not in self.used_ports
-
+        return (self.port_min <= port <= self.port_max and (proto, port) not in self.used_ports)
+    
     def free_port(self, proto):
-        for port in range(PORT_MIN, PORT_MAX + 1):
+        for port in range(self.port_min, self.port_max + 1):
             if self.is_free(proto, port):
                 return port
         return None
