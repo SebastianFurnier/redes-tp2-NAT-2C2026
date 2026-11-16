@@ -114,6 +114,11 @@ class _RouterTestCase(unittest.TestCase):
     def flows(self):
         return self.router.connection.flow_mods()
 
+    def expire(self, flow, reason):
+        """El switch avisa que `flow` venció."""
+        self.router._handle_FlowRemoved(
+            SimpleNamespace(ofp=SimpleNamespace(match=flow.match, reason=reason)))
+
 
 class ConfiguredRouterTest(_RouterTestCase):
     CONFIG = RouterConfig(public_ip="10.0.0.254", public_mac="02:00:00:00:0a:01",
@@ -148,6 +153,150 @@ class ConfiguredRouterTest(_RouterTestCase):
 
     def test_default_config_of_another_router_is_not_modified(self):
         self.assertEqual(protorouter.ProtoRouter.config.public_ip, IPAddr("200.0.0.254"))
+
+class FlowExpiryTest(_RouterTestCase):
+    def setUp(self):
+        super(FlowExpiryTest, self).setUp()
+        self.learn("200.0.0.1", "00:00:00:00:00:01", 1)
+        self.learn("192.168.1.2", "00:00:00:00:00:02", 2)
+        self.learn("192.168.1.3", "00:00:00:00:00:03", 3)
+
+    def connect(self, host="192.168.1.2", port=2, src_port=4321):
+        self.send(host, "200.0.0.1", TCP, port, src_port=src_port, dst_port=80)
+        return self.router.nat_table.lookup_outgoing(
+            TCP, IPAddr(host), src_port, IPAddr("200.0.0.1"), 80)
+
+    def test_idle_expiry_of_both_rules_releases_the_public_port(self):
+        record = self.connect()
+        out_flow, in_flow = self.flows()
+        self.assertEqual(record.flows_alive, 2)
+
+        self.expire(out_flow, IDLE)
+        self.assertIn(record, self.router.nat_table.outgoing.values())
+        self.expire(in_flow, IDLE)
+
+        self.assertEqual(self.router.nat_table.outgoing, {})
+        self.assertEqual(self.router.nat_table.incoming, {})
+        self.assertTrue(self.router.nat_table.is_free(TCP, record.public_port))
+
+    def test_one_live_rule_keeps_the_connection(self):
+        """Un stream que solo va en un sentido no pierde su puerto."""
+        record = self.connect()
+        out_flow, _in_flow = self.flows()
+        self.expire(out_flow, IDLE)
+        self.assertIn(record, self.router.nat_table.outgoing.values())
+        self.assertFalse(record.flows_installed)
+
+    def test_traffic_after_a_single_expired_rule_reinstalls_both(self):
+        record = self.connect()
+        out_flow, _in_flow = self.flows()
+        self.expire(out_flow, IDLE)
+        self.connect()                       # el siguiente paquete saliente
+        self.assertEqual(len(self.flows()), 4)
+        self.assertTrue(record.flows_installed)
+        self.assertEqual(record.flows_alive, 2)
+
+    def test_traffic_after_full_idle_expiry_creates_the_record_again(self):
+        record = self.connect()
+        first_port = record.public_port
+        for flow in self.flows():
+            self.expire(flow, IDLE)
+        self.assertEqual(self.router.nat_table.outgoing, {})
+
+        again = self.connect()
+        self.assertEqual(len(self.flows()), 4)
+        self.assertTrue(again.flows_installed)
+        self.assertEqual(again.public_port, first_port)
+
+    def test_hard_timeout_reinstalls_the_rules_and_keeps_the_record(self):
+        record = self.connect()
+        for flow in self.flows():
+            self.expire(flow, HARD)
+        self.assertIn(record, self.router.nat_table.outgoing.values())
+        self.assertEqual(len(self.flows()), 4)
+        self.assertTrue(record.flows_installed)
+        self.assertEqual(record.flows_alive, 2)
+
+    def test_hard_timeout_without_arp_leaves_a_cold_record(self):
+        record = self.connect()
+        for flow in self.flows():
+            # El ARP del servidor venció mientras tanto
+            self.router.arp_table.entries.pop(IPAddr("200.0.0.1"), None)
+            self.expire(flow, HARD)
+        self.assertFalse(record.flows_installed)
+        self.assertIsNotNone(record.cold_since)
+        self.assertEqual(len(self.flows()), 2)      # no se pudo reinstalar
+
+    def test_cold_records_are_released_after_the_grace_period(self):
+        record = self.connect()
+        record.flows_installed = False
+        record.cold_since = time.time() - 1
+        self.router.clean_cold_records()             # todavía en gracia
+        self.assertIn(record, self.router.nat_table.outgoing.values())
+
+        record.cold_since = time.time() - self.cfg.flow_idle_timeout - 1
+        self.router.clean_cold_records()
+        self.assertEqual(self.router.nat_table.outgoing, {})
+
+    def test_connection_without_arp_never_installs_and_is_cleaned(self):
+        self.router.arp_table.entries.pop(IPAddr("200.0.0.1"))
+        record = self.connect()
+        self.assertEqual(self.flows(), [])
+        self.assertIsNotNone(record.cold_since)
+        record.cold_since -= self.cfg.flow_idle_timeout + 1
+        self.router.clean_cold_records()
+        self.assertEqual(self.router.nat_table.outgoing, {})
+
+    def test_removal_requested_by_the_controller_is_ignored(self):
+        record = self.connect()
+        for flow in self.flows():
+            self.expire(flow, of.OFPRR_DELETE)
+        self.assertIn(record, self.router.nat_table.outgoing.values())
+        self.assertTrue(record.flows_installed)
+
+    def test_removal_of_an_unknown_rule_is_ignored(self):
+        record = self.connect()
+        out_flow, in_flow = self.flows()
+        for flow in (out_flow, in_flow):
+            self.expire(flow, IDLE)
+        # Un aviso duplicado o tardío no rompe nada ni libera de más
+        other = self.connect("192.168.1.3", port=3, src_port=7777)
+        self.expire(out_flow, IDLE)
+        self.assertIn(other, self.router.nat_table.outgoing.values())
+        self.assertTrue(other.flows_installed)
+        self.assertEqual(other.flows_alive, 2)
+
+    def test_connections_expire_independently(self):
+        a = self.connect("192.168.1.2", port=2, src_port=4000)
+        b = self.connect("192.168.1.3", port=3, src_port=5000)
+        a_out, a_in, _b_out, _b_in = self.flows()
+        self.expire(a_out, IDLE)
+        self.expire(a_in, IDLE)
+        self.assertNotIn(a, self.router.nat_table.outgoing.values())
+        self.assertIn(b, self.router.nat_table.outgoing.values())
+        self.assertEqual(b.flows_alive, 2)
+
+    def test_ping_rules_expire_and_release_the_record(self):
+        self.send("192.168.1.2", "200.0.0.1", ICMP, 2,
+                  icmp_type=protorouter.ICMP_ECHO_REQUEST, echo_id=77,
+                  sequence=1)
+        record = next(iter(self.router.nat_table.outgoing.values()))
+        for flow in self.flows():
+            self.expire(flow, IDLE)
+        self.assertNotIn(record, self.router.nat_table.outgoing.values())
+        self.assertEqual(self.router.nat_table.incoming, {})
+
+    def test_udp_expiry_frees_port_for_reuse_by_another_host(self):
+        # h2 y h3 usan el mismo puerto origen: h3 recibe otro puerto público
+        a = self.connect("192.168.1.2", port=2, src_port=5555)
+        self.send("192.168.1.3", "200.0.0.1", UDP, 3, src_port=5555,
+                  dst_port=80)
+        outgoing = self.router.nat_table.outgoing
+        self.assertEqual(len(outgoing), 2)
+        for flow in self.flows()[:2]:
+            self.expire(flow, IDLE)
+        self.assertNotIn(a, outgoing.values())
+        self.assertTrue(self.router.nat_table.is_free(TCP, a.public_port))
 
 if __name__ == "__main__":
     unittest.main()

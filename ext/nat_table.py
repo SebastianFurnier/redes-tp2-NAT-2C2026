@@ -12,6 +12,9 @@ class NatEntry(object):
         self.remote_port = remote_port
         self.public_port = public_port
         self.flows_installed = False
+        self.flows_alive = 0
+        self.cold_since = None
+        
 
     def outgoing_key(self):
         return (self.proto, self.private_ip, self.private_port, self.remote_ip, self.remote_port)

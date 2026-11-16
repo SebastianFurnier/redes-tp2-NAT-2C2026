@@ -73,6 +73,7 @@ class ProtoRouter(object):
 
         Timer(5, self.arp_table.clean_expired_entries, recurring=True)
         Timer(1, self.clean_expired_pending, recurring=True)
+        Timer(2, self.clean_cold_records, recurring= True)
         connection.addListeners(self)
 
     def describe(self,record):
@@ -424,6 +425,8 @@ class ProtoRouter(object):
         private_entry = self.arp_table.lookup(record.private_ip)
 
         if remote_entry is None or private_entry is None:
+            if record.cold_since is None:
+                record.cold_since = time.time()
             if remote_entry is None:
                 self.send_arp_request(record.remote_ip)
             if private_entry is None:
@@ -492,8 +495,100 @@ class ProtoRouter(object):
         self.connection.send(fm_in)
 
         record.flows_installed = True
+        record.flows_alive = 2
+        record.cold_since = None
         log_color(GREEN, f"Flujos instalados para {self.describe(record)}")
 
+    # ------------------------------------------------------------------
+    #  Vencimiento de reglas
+    # ------------------------------------------------------------------
+    def _handle_FlowRemoved(self,event):
+        """El switch avisa que una de las dos reglas de una conexión venció
+        (las instalamos con OFPFF_SEND_FLOW_REM)."""
+
+        ofp = event.ofp
+        if ofp.reason not in (of.OFPRR_IDLE_TIMEOUT, of.OFPRR_HARD_TIMEOUT):
+            return
+        
+        records = self._records_for_match(ofp.match)
+
+        if not records:
+            log_color(YELLOW, "FlowRemoved de una regla sin registro NAT (ya liberado): se ignora")
+            return
+        for record in records:
+            self.flow_expired(record, ofp.reason)
+
+    def _records_for_match(self,match):
+        """
+        Busca el/los registros NAT a los que pertenece una regla vencida.
+        """
+        proto = match.nw_proto
+        if match.dl_type != ethernet.IP_TYPE or proto not in (ICMP_PROTO, TCP_PROTO, UDP_PROTO):
+            return []
+
+        is_return_rule = match.in_port == self.config.public_port
+        if proto == ICMP_PROTO:
+            if is_return_rule:
+                return [r for r in self.nat_table.outgoing.values()
+                        if r.proto == ICMP_PROTO
+                        and r.remote_ip == match.nw_src]
+            return [r for r in self.nat_table.outgoing.values()
+                    if r.proto == ICMP_PROTO
+                    and r.private_ip == match.nw_src
+                    and r.remote_ip == match.nw_dst]
+
+        if is_return_rule:
+            record = self.nat_table.lookup_incoming(
+                proto, match.tp_dst, match.nw_src, match.tp_src)
+        else:
+            record = self.nat_table.lookup_outgoing(
+                proto, match.nw_src, match.tp_src, match.nw_dst, match.tp_dst)
+        return [record] if record is not None else []
+    
+    def flow_expired(self,record,reason):
+        """
+        Venció una de las reglas de la conexión.  El registro solo se toca
+        cuando el switch ya no tiene ninguna de las dos: mientras una siga
+        viva, la conexión recibe tráfico en ese sentido
+          - Sin reglas por INACTIVIDAD: la conexión terminó → se libera el
+            puerto público. 
+          - Sin reglas por HARD TIMEOUT: la conexión puede seguir viva, así
+            que se conserva el registro y se reinstalan las reglas ya mismo,
+            para no pasar a resolver todo en el controlador.
+        """
+        record.flows_alive = max(0, record.flows_alive - 1)
+        record.flows_installed = False
+
+        if record.flows_alive > 0:
+            log_color(YELLOW, f"Venció una regla de {self.describe(record)}; "
+                              f"la otra sigue activa")
+            return
+
+        if reason == of.OFPRR_IDLE_TIMEOUT:
+            self.nat_table.release(record)
+            log_color(RED, f"Vencimiento por inactividad: puerto público "
+                           f"{record.public_port} liberado "
+                           f"({self.describe(record)})")
+            return
+
+        log_color(YELLOW, f"Hard timeout: reinstalando reglas de "
+                          f"{self.describe(record)}")
+        self.install_nat_flows(record)
+
+    def clean_cold_records(self):
+        """
+        Libera los registros que no lograron instalar sus reglas y llevan más de un idle_timeout
+        sin conseguirlo.
+        """
+        grace = max(self.config.flow_idle_timeout, 1)
+        now = time.time()
+        cold = [r for r in list(self.nat_table.outgoing.values())
+                if r.cold_since is not None and now - r.cold_since > grace]
+        for record in cold:
+            self.nat_table.release(record)
+            log_color(RED, f"Registro sin reglas liberado: "
+                           f"{self.describe(record)}")
+    
     def clean_expired_pending(self):
         now = time.time()
         expired = [ip for ip, t in self.pending_time.items() if now - t > self.config.pending_timeout]
