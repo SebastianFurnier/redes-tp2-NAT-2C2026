@@ -4,21 +4,26 @@ ARP_TIMEOUT = 10
 
 
 class ArpEntry(object):
-    def __init__(self, mac, port):
+
+    #Recibe el Timeout y ki guarda
+    def __init__(self, mac, port, timeout=ARP_TIMEOUT):
         self.mac = mac                
-        self.port = port               
+        self.port = port
+        self.timeout = timeout
         self.timestamp = time.time()    
 
     def is_expired(self):
-        return time.time() - self.timestamp > ARP_TIMEOUT
+        return time.time() - self.timestamp > self.timeout
 
 
 class ArpTable(object):
-    def __init__(self):
-        self.entries = {}              
+    
+    def __init__(self, timeout=ARP_TIMEOUT):
+        self.entries = {}
+        self.timeout = timeout
 
     def learn(self, ip, mac, port):
-        self.entries[ip] = ArpEntry(mac, port)
+        self.entries[ip] = ArpEntry(mac, port, self.timeout)
 
     def lookup(self, ip):
         entry = self.entries.get(ip)
