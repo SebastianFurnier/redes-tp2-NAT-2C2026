@@ -21,6 +21,7 @@
 \usepackage{fancyhdr}
 \usepackage{lastpage}
 \pagestyle{fancy}
+\usepackage{graphicx}
 \setlength{\headheight}{27pt}
 \renewcommand{\headrulewidth}{1pt}
 \renewcommand{\footrulewidth}{1pt}
@@ -1041,6 +1042,103 @@ conexiones simultáneas se distinguen correctamente por puerto; y, una vez estab
 una conexión, el tráfico se procesa íntegramente en el switch. El comportamiento ante
 vencimientos es el esperado en todos los casos verificados, y la solución no depende
 de ninguna dirección escrita en el código.
+\section{Pruebas manuales con iperf y Wireshark}
+Para realizar estas pruebas comenzamos ejecutando el controlador POX con el siguiente comando:
+\begin{verbatim}
+    python3 pox.py log.level --DEBUG openflow.of_01 --port=6653 protorouter
+\end{verbatim}
+
+y luego la topología con el siguiente comando:
+\begin{verbatim}
+    sudo python3 topo.py
+\end{verbatim}
+
+Una vez que está corriendo Mininet, usamos iperf para hacer pruebas de intercambio de paquetes, tanto TCP como UDP, entre h1 (servidor) y distintos clientes (h2, h3 o h4).
+
+Levantamos en h1 un servidor TCP y uno UDP, ambos escuchando en el puerto 5001:
+
+\begin{verbatim}
+    h1 iperf -s & iperf -s -u &
+\end{verbatim}
+
+Ahora probamos enviando tráfico TCP desde el host h2 al servidor, capturando la interfaz privada, entre h2 y el switch, y la pública, entre el switch y h1:
+
+\begin{verbatim}
+    h2 iperf -c 200.0.0.1 -n 1K -l 100
+\end{verbatim}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{img/eth2_TCP.png}
+  \caption{Captura en la interfaz privada (s1-eth2).}
+  \label{fig:captura_eth2}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{img/eth1_TCP.png}
+  \caption{Captura en la interfaz pública (s1-eth1).}
+  \label{fig:captura_eth1}
+\end{figure}
+
+Observamos el flujo correcto en ambas interfaces.
+
+Ahora probamos enviando paquetes TCP y UDP desde el mismo host h2:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{img/eth2_TCP_UDP.png}
+  \caption{Captura en la interfaz privada (s1-eth2).}
+  \label{fig:captura_eth2}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{img/eth1_TCP_UDP.png}
+  \caption{Captura en la interfaz pública (s1-eth1).}
+  \label{fig:captura_eth1}
+\end{figure}
+
+\subsection{Enviando paquetes desde distintos host}
+
+Para esta prueba repetimos los pasos para ejecutar POX y mininet, pero cambiamos el modo de ejecucion de iperf en mininet. 
+
+Para una ejecucion mas rapida de los comandos, guardamos en un archivo llamado prueba.txt en la carpeta raiz los comandos:
+
+\begin{verbatim}
+    h1 killall iperf
+    h1 iperf -s & iperf -s -u &
+    h2 iperf -c 200.0.0.1 -n 1K -l 100 &
+    h3 iperf -c 200.0.0.1 -u -n 1K -l 100
+\end{verbatim}
+
+De esta manera volvemos a levantar un servidor TCP y uno UDP en el host h1, luego desde h2 comenzamos con el envio de paquetes TCP y desde h3 el envio de datagramas UDP.
+
+Para correrlo, ejecutamos desde mininet:
+\begin{verbatim}
+    source prueba.txt
+\end{verbatim}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{img/eth3_h3_UDP.png}
+  \caption{Captura en la interfaz privada (s1-eth3).}
+  \label{fig:captura_eth3}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{img/eth2_h2_TCP.png}
+  \caption{Captura en la interfaz privada (s1-eth2).}
+  \label{fig:captura_eth2}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\textwidth]{img/eth1_TCP_UDP_h2_h3.png}
+  \caption{Captura en la interfaz publica (s1-eth1).}
+  \label{fig:captura_eth1}
+\end{figure}
 
 % =====================================================================
 \section{Conclusión Final}
@@ -1068,10 +1166,6 @@ ocupados sin uso o reglas que apuntan a traducciones inexistentes. El aviso de
 remoción de reglas y la reinstalación ante el siguiente paquete son lo que cierra ese
 circuito y lo que hace que el sistema pueda correr de forma sostenida.
 
-Quedan como líneas de trabajo futuro la publicación de servicios hacia la red
-pública, la traducción del identificador de eco para permitir varios \emph{ping}
-simultáneos desde hosts distintos, y el uso de reglas agregadas para reducir el
-consumo de la tabla de flujos en escenarios de muchas conexiones.
 
 % =====================================================================
 \section{Bibliografía y Referencias}
