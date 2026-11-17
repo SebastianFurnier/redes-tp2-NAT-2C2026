@@ -160,7 +160,7 @@ el reenvío del primer paquete ya traducido.
 Abrir terminales por host:
 
 ```bash
-mininet> xterm h1 h2 h3
+xterm h1 h2 h3
 ```
 
 Servidor TCP en `h1` (puerto 9000):
@@ -208,6 +208,13 @@ mininet> sh ovs-ofctl dump-flows s1          # hay 2 reglas
 mininet> sh ovs-ofctl dump-flows s1          # ya no hay reglas
 # en el log de POX: "Vencimiento por inactividad: puerto público ... liberado"
 mininet> h2 ping -c 3 200.0.0.1              # se reinstalan las reglas
+```
+
+### Prueba UDP y TCP a la par
+
+```bash
+h1 iperf -s & iperf -s -u &
+h2 iperf -c 200.0.0.1 -n 1K -l 100 & iperf -c 200.0.0.1 -u -n 1K -l 100
 ```
 
 ## Diseño
