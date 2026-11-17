@@ -421,16 +421,19 @@ class ProtoRouter(object):
         privado; si falta alguna, se pide por ARP y se reintenta al llegar
         la respuesta.
         """
+        if record.flows_installed:
+            return
+        if record.outgoing_key() not in self.nat_table.outgoing:
+            return 
+        
         remote_entry = self.arp_table.lookup(record.remote_ip)
         private_entry = self.arp_table.lookup(record.private_ip)
 
         if remote_entry is None or private_entry is None:
             if record.cold_since is None:
                 record.cold_since = time.time()
-            if remote_entry is None:
-                self.send_arp_request(record.remote_ip)
-            if private_entry is None:
-                self.send_arp_request(record.private_ip)
+            missing = record.remote_ip if remote_entry is None else record.private_ip
+            self.resolve(missing, lambda _: self.install_nat_flows(record))
             return
 
         proto = record.proto
