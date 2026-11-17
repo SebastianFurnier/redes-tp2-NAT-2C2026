@@ -1,0 +1,6 @@
+# Los scripts de shell deben conservar terminaciones de linea LF: con CRLF el
+# shebang se lee como "bash\r" y el script no arranca en Linux/WSL/macOS.
+*.sh text eol=lf
+
+# Los scripts de PowerShell se mantienen con CRLF (es lo que espera Windows).
+*.ps1 text eol=crlf
