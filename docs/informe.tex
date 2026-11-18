@@ -1,12 +1,8 @@
-\documentclass[10pt,a4paper]{article}
+﻿\documentclass[10pt,a4paper]{article}
 % --- Codificación e idioma ---
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage[spanish,es-tabla]{babel}
-% babel-spanish activa la particion silabica (shorthands "<> y otros). Dentro de
-% entornos verbatim (lstlisting) eso rompe la compilacion. Se desactiva.
-\usepackage{etoolbox}
-\AtBeginDocument{\shorthandoff{<>}}
+\usepackage[spanish,es-tabla,es-noshorthands]{babel}
 \hyphenpenalty=10000
 \exhyphenpenalty=10000
 % --- Layout y utilidades ---
@@ -15,15 +11,13 @@
 \usepackage{float}
 \usepackage{booktabs}
 \usepackage{array}
-\usepackage{listings}
 \usepackage{caption}
 \usepackage{hyperref}
 \usepackage{enumitem}
 \usepackage{amsmath}
 \usepackage[table]{xcolor}
-%------------------------------------------------------------------------------
-% ENCABEZADO Y PIE DE PÁGINA
-%------------------------------------------------------------------------------
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds,calc}
 \usepackage{fancyhdr}
 \usepackage{lastpage}
 \pagestyle{fancy}
@@ -38,308 +32,373 @@
     urlcolor=blue!60!black,
     citecolor=blue!50!black,
 }
-% --- Estilo de código ---
-\definecolor{codebg}{RGB}{248,248,248}
-\definecolor{codecomment}{RGB}{106,153,85}
-\definecolor{codekeyword}{RGB}{86,86,196}
-\definecolor{codestring}{RGB}{163,101,38}
-\lstdefinestyle{codestyle}{
-    backgroundcolor=\color{codebg},
-    commentstyle=\color{codecomment},
-    keywordstyle=\color{codekeyword},
-    stringstyle=\color{codestring},
-    basicstyle=\ttfamily\footnotesize,
-    breakatwhitespace=false,
-    breaklines=true,
-    captionpos=b,
-    keepspaces=true,
-    numbers=left,
-    numberstyle=\tiny\color{gray},
-    numbersep=6pt,
-    showspaces=false,
-    showstringspaces=false,
-    showtabs=false,
-    tabsize=4,
-    frame=single,
-    rulecolor=\color{gray!40},
-    language=Python,
-    morekeywords={self,None,True,False}
-}
-\lstset{style=codestyle}
-%------------------------------------------------------------------------------
-% CARÁTULA
-%------------------------------------------------------------------------------
-\renewcommand*{\maketitle}{
+\definecolor{fondopriv}{RGB}{234,242,252}
+\definecolor{fondopub}{RGB}{252,244,228}
+\definecolor{fondorig}{RGB}{238,238,238}
+\definecolor{fondctrl}{RGB}{242,236,250}
+\captionsetup{font=small,labelfont=bf}
+% La version de float.sty instalada deja '\\' indefinido dentro de un flotante
+% [H], lo que rompe los nodos de TikZ con varias lineas. El flotante debe
+% restaurar el entorno de parrafo; se agrega al final del preambulo para que
+% paquetes posteriores (tikz) no lo pisen.
+\makeatletter
+\g@addto@macro\@floatboxreset{\@setminipage}
+\makeatother
+\begin{document}
+% =====================================================================
+% PORTADA
+% =====================================================================
+\begin{titlepage}
 \thispagestyle{empty}
 \begin{center}
-\vspace{1cm}
-\textsc{\Large Redes (TA048)}\\
-\textsc{\small Facultad de Ingeniería --- Universidad de Buenos Aires}\\[0.6cm]
-{\huge \bfseries Trabajo Práctico N\textsuperscript{o} 2}\\[0.2cm]
-{\Large \bfseries SDN: NAT con POX y Mininet}\\[0.3cm]
-\rule{0.8\textwidth}{0.4pt}\\[0.4cm]
-{\large NAT saliente con traducción por puertos (PAT)}\\[1 cm]
-{\large 2\textsuperscript{do} cuatrimestre 2026}\\
-{\large Comisión jueves}\\[1.5cm]
-\begin{minipage}{0.7\textwidth}
-\begin{flushleft}
-\large
-\textbf{Integrantes:}\\[0.5cm]
-Alen Monti --- 108081\\[0.3cm]
-Nadeska Millan --- 110779 \\[0.3cm]
-Netanel Jamilis --- 99093 \\[0.3cm]
-Sebastian Furnier --- 110129
-\end{flushleft}
-\end{minipage}
+\vspace*{0.5cm}
+
+{\large Redes (TA048)}\\
+{\large Introducción a los Sistemas Distribuidos (75.43)}\\[0.2cm]
+{\small Facultad de Ingeniería --- Universidad de Buenos Aires}\\[1.2cm]
+
+{\Huge \bfseries Trabajo Práctico N\textsuperscript{o} 2}\\[0.4cm]
+{\Large \bfseries SDN: implementación de NAT con POX y Mininet}\\[0.3cm]
+{\large NAT saliente con traducción por puertos (PAT)}\\[1.5cm]
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Apellido y Nombre} & \textbf{Padrón} \\
+\midrule
+Monti, Alen              & 108081 \\
+Millan, Nadeska          & 110779 \\
+Jamilis, Netanel David   & 99093  \\
+Furnier, Sebastian       & 110129 \\
+\bottomrule
+\end{tabular}
+
+\vspace{1.5cm}
+{\large Comisión jueves}\\[0.3cm]
+{\large Fecha de entrega: 19/11/2026}\\[0.3cm]
+{\large 2\textsuperscript{do} cuatrimestre 2026}
+
 \vfill
-{\large \today}
 \end{center}
-}
-\begin{document}
-\maketitle
+\end{titlepage}
+
+% =====================================================================
+\tableofcontents
 \clearpage
+
 % =====================================================================
 \section{Introducción}
 % =====================================================================
-El presente trabajo práctico tiene como objetivo implementar un
-\textbf{NAT saliente con traducción por puertos (PAT, \emph{Port Address
-Translation})} en el contexto de \emph{Redes Definidas por Software} (SDN).
+En este trabajo se implementa un \textbf{NAT saliente con traducción por puertos}
+(\emph{PAT, Port Address Translation}) como una aplicación sobre una red definida
+por software (SDN). El escenario de partida es una red con dos subredes ---una
+pública y una privada--- unidas por un único switch OpenFlow controlado por un
+controlador POX, en la que varios hosts de la red privada deben poder comunicarse
+con la red pública compartiendo una sola dirección IP.
 
-A diferencia de una arquitectura tradicional, en SDN el comportamiento de la
-red no está distribuido en los dispositivos de \emph{forwarding}, sino que es
-definido por un \textbf{controlador} que se comunica con ellos mediante el
-protocolo \textbf{OpenFlow}. Esto separa el \emph{plano de control}
-(decisiones de ruteo y traducción, en el controlador) del \emph{plano de datos}
-(reenvío de paquetes, en los switches).
+La particularidad del enfoque SDN es que el comportamiento de la red no está
+distribuido en los equipos de conmutación ni configurado estáticamente en ellos,
+sino que lo define un \textbf{controlador} que programa a los switches mediante el
+protocolo \textbf{OpenFlow}. De este modo, el controlador concentra las
+\emph{decisiones} (qué traducir, hacia dónde reenviar, cuándo liberar recursos) y el
+switch ejecuta el \emph{trabajo repetitivo} de reescribir y reenviar los paquetes
+de las conexiones que ya conoce. La separación entre \textbf{plano de control}
+(controlador) y \textbf{plano de datos} (switch) es el eje de todo el diseño.
 
-La solución se desarrolla sobre el controlador \textbf{POX} y se valida con la
-herramienta de emulación \textbf{Mininet}. El controlador provisto por la
-cátedra (\texttt{ext/protorouter.py}) implementaba solamente: procesamiento de
-paquetes IPv4, detección de tráfico proveniente de la red privada, reescritura
-de direcciones MAC e instalación de reglas de \emph{forwarding}. Sobre esa base
-se construyó el trabajo completo:
+Sobre el controlador provisto por la cátedra, que sólo implementaba procesamiento
+IPv4, reescritura de direcciones MAC y un forwarding básico, se agregó la
+funcionalidad completa que faltaba:
 
 \begin{itemize}[nosep]
-    \item \textbf{La base}: la tabla de traducciones con su registro
-          por conexión y la asignación de puertos públicos, la corrección de
-          la cola de paquetes que esperan respuesta ARP y la función simple
-          ``resolveme esta IP y avisame cuando la tengas'', más el esqueleto de
-          las funciones de ida y vuelta.
-    \item \textbf{El NAT}: la clasificación de cada paquete, la
-          traducción de IP y puertos en el sentido saliente, la restauración de
-          los valores originales en el sentido entrante, y la instalación de
-          reglas en el switch para que éste traduzca por su cuenta.
-    \item \textbf{La configuración y los vencimientos}: sacar IPs,
-          MACs, subredes y tiempos de las constantes sueltas para que salgan de
-          los parámetros de arranque, hacer configurable la topología y liberar
-          los recursos cuando las reglas vencen.
+    \item una \textbf{tabla de traducciones} con un registro por conexión y una
+          política de asignación de puertos públicos;
+    \item el \textbf{manejo completo de ARP}, sin una sola entrada estática, para
+          resolver las MAC de ambos extremos;
+    \item la \textbf{traducción en ambos sentidos} de direcciones IP, puertos de
+          transporte y direcciones MAC;
+    \item la \textbf{instalación de reglas OpenFlow} que delegan en el switch la
+          traducción y el reenvío de cada conexión, y
+    \item la \textbf{liberación de recursos} por vencimiento de esas reglas.
+\end{itemize}
+
+El objetivo del trabajo es comprender cómo una función de red clásica puede
+implementarse como una aplicación de control, y analizar el compromiso entre lo que
+se resuelve una vez por conexión en el controlador y lo que conviene delegar al
+plano de datos.
+
+% =====================================================================
+\section{Hipótesis y Suposiciones}
+% =====================================================================
+Para el desarrollo del sistema se consideran las siguientes hipótesis:
+
+\begin{itemize}[nosep]
+\itemsep=2pt
+  \item \textbf{Tráfico IPv4 únicamente}: se deshabilita IPv6 en los hosts y en el
+          switch para que no interfiera con la lógica implementada.
+  \item \textbf{NAT exclusivamente saliente}: las conexiones siempre las inicia
+          un host de la red privada. No se publican servicios hacia la red pública.
+  \item \textbf{Una única IP pública}: los hosts privados comparten
+          la misma dirección y se distinguen por el puerto.
+  \item \textbf{Subredes disjuntas y conectadas}: el switch tiene una interfaz
+          hacia cada red y no existe enrutamiento intermedio.
+  \item \textbf{Un único switch}: el estado de control vive asociado a una
+          conexión OpenFlow; se contempla un dominio con un solo dispositivo.
+  \item \textbf{Protocolos con puertos de transporte}: el demultiplexado del
+          tráfico entrante se realiza por puerto. ICMP se trata como un caso
+          especial a partir del identificador de eco.
+  \item \textbf{Tiempos en el orden de segundos}: los vencimientos y las esperas
+          de ARP se manejan con valores de pocos segundos, coherentes con el
+          entorno emulado en Mininet.
 \end{itemize}
 
 % =====================================================================
-\clearpage
-\section{Descripción general de la solución}
+\section{Implementación}
 % =====================================================================
+\subsection{Arquitectura del sistema}
+
+La solución se apoya en dos procesos que trabajan en conjunto: el emulador de red
+Mininet, que construye la topología y los hosts, y el controlador POX, que recibe
+los eventos del switch y programa las reglas. Sobre el switch conviven, además, tres
+piezas que el controlador administra: la tabla ARP, la tabla de traducciones y los
+parámetros de configuración. La Figura~\ref{fig:arq} muestra cómo se articulan.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    hnode/.style={draw, rounded corners, minimum width=1.5cm, minimum height=0.8cm, fill=white, align=center},
+    caja/.style={draw, rounded corners, minimum width=3.2cm, minimum height=0.7cm, fill=white, align=center},
+    ctrlbox/.style={draw, rounded corners, fill=fondctrl, inner sep=6pt},
+  ]
+  % --- Zona publica ---
+  \node[fill=fondopub, draw=gray!50, rounded corners, minimum width=4.6cm, minimum height=4.6cm]
+       (zpub) at (0,0) {};
+  \node[font=\footnotesize\bfseries, anchor=north] at (zpub.north) {Red pública};
+  \node[font=\scriptsize, anchor=north] at ([yshift=-0.45cm]zpub.north) {200.0.0.0/24};
+  \node[hnode, fill=fondopub] (h1) at (0,0.35) {h1};
+  \node[font=\scriptsize, below=1pt of h1] {servidor};
+
+  % --- Zona privada ---
+  \node[fill=fondopriv, draw=gray!50, rounded corners, minimum width=4.6cm, minimum height=4.6cm]
+       (zpriv) at (10.2,0) {};
+  \node[font=\footnotesize\bfseries, anchor=north] at (zpriv.north) {Red privada};
+  \node[font=\scriptsize, anchor=north] at ([yshift=-0.45cm]zpriv.north) {192.168.1.0/24};
+  \node[hnode, fill=fondopriv] (h2) at (10.2,1.15) {h2};
+  \node[hnode, fill=fondopriv] (h3) at (10.2,-0.1) {h3};
+  \node[hnode, fill=fondopriv] (h4) at (10.2,-1.45){h4};
+
+  % --- Switch ---
+  \node[draw, fill=white, minimum width=3.3cm, minimum height=3.0cm, align=center]
+       (s1) at (5.1,0) {switch OpenFlow\\\textbf{s1}\\[4pt]
+          {router L3}\\[1pt]{\texttt{200.0.0.254}}\\{\texttt{192.168.1.254}}};
+
+  \draw[<->, thick] (h1.east) -- node[above, font=\scriptsize]{puerto 1} (s1.west);
+  \draw[<->, thick] (h2.west) -- node[above, font=\scriptsize]{2} (s1.east);
+  \draw[<->, thick] (h3.west) -- node[above, font=\scriptsize]{3} (s1.east);
+  \draw[<->, thick] (h4.west) -- node[below, font=\scriptsize]{4} (s1.east);
+
+  % --- Controlador ---
+  \node[ctrlbox, align=center] (pox) at (5.1,3.5) {\textbf{Controlador POX} (proceso aparte)\\[2pt]
+     {\scriptsize clasificación $\cdot$ tabla NAT $\cdot$ tabla ARP $\cdot$ flujos}};
+  \draw[{Latex}-{Latex}, very thick, dashed] (pox.south) -- (s1.north)
+       node[midway, right, font=\scriptsize, align=left]{OpenFlow 1.0\\PacketIn / FlowMod};
+
+  % --- Mininet ---
+  \node[align=center, font=\scriptsize] at (2.3,2.45) {Mininet (emulador)};
+\end{tikzpicture}
+\caption{Arquitectura de la solución: el switch actúa como router de capa 3 con dos
+interfaces lógicas y el controlador POX lo programa por OpenFlow.}
+\label{fig:arq}
+\end{figure}
+
+El switch no realiza \emph{routing} en el sentido tradicional: no mantiene una tabla
+de rutas ni ejecuta un protocolo de enrutamiento. Actúa como router de capa 3 porque
+el controlador le asigna dos identidades (dirección IP y MAC) y lo programa para
+reescribir los paquetes que cruzan la frontera entre las dos subredes. Las dos
+interfaces del dispositivo son:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccl}
+\toprule
+\textbf{Interfaz} & \textbf{IP} & \textbf{MAC} & \textbf{Puertos del switch} \\
+\midrule
+Pública & \texttt{200.0.0.254}   & \texttt{00:00:00:aa:aa:aa} & 1 (hacia h1) \\
+Privada & \texttt{192.168.1.254} & \texttt{00:00:00:bb:bb:bb} & 2 a 4 (hacia h2, h3, h4) \\
+\bottomrule
+\end{tabular}
+\caption{Interfaces del router implementado sobre el switch \texttt{s1}.}
+\end{table}
+
+Sobre el switch se ejecuta Mininet, que emula los hosts. Cada host tiene una IP, una
+MAC y una puerta de enlace por defecto que apunta a la interfaz correspondiente del
+router, pero \textbf{no tiene ninguna entrada ARP precargada}: la MAC de la puerta
+de enlace y la del host remoto se resuelven con el protocolo ARP, que atiende el
+controlador. Ésta es una decisión deliberada, tomada en función del enunciado, y es
+la que permite que la solución no dependa de valores fijos.
+
 \subsection{Topología}
-La topología (\texttt{topo.py}) consta de un switch OpenFlow (\texttt{s1})
-con cuatro hosts conectados: uno en la red pública y tres en la privada.
 
-\begin{itemize}[nosep]
-    \item \texttt{h1}: host en la red pública (servidor),
-          \texttt{200.0.0.1/24}, gateway \texttt{200.0.0.254}.
-    \item \texttt{h2}, \texttt{h3}, \texttt{h4}: hosts privados,
-          \texttt{192.168.1.2/24}, \texttt{.3/24} y \texttt{.4/24}, gateway
-          \texttt{192.168.1.254}.
-\end{itemize}
+La topología consta de un host en la red pública, que actúa como servidor, y tres
+hosts en la red privada, que actúan como clientes. La Figura~\ref{fig:topo} y la
+Tabla~\ref{tab:hosts} resumen la configuración.
 
-El controlador hace que \texttt{s1} actúe como un router de capa 3 con dos
-interfaces:
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    hnode/.style={draw, rounded corners, minimum width=1.5cm, minimum height=0.8cm, fill=white, align=center},
+    lblsmall/.style={font=\scriptsize, align=center},
+  ]
+  % --- Hosts ---
+  \node[hnode, fill=fondopub] (h1) at (0,0) {\textbf{h1}};
+  \node[hnode, fill=fondopriv] (h2) at (12,2.0) {\textbf{h2}};
+  \node[hnode, fill=fondopriv] (h3) at (12,0)   {\textbf{h3}};
+  \node[hnode, fill=fondopriv] (h4) at (12,-2.0){\textbf{h4}};
+
+  % --- Switch ---
+  \node[regular polygon, regular polygon sides=3, shape border rotate=90,
+        minimum size=3.6cm, draw, fill=fondorig, inner sep=0pt] (sw) at (6,0) {};
+  \node[align=center, font=\footnotesize] at (6,0) {switch\\\textbf{s1}};
+
+  % --- Enlaces ---
+  \draw[thick] (h1) -- node[above, lblsmall, yshift=1pt]{puerto 1} (sw.west);
+  \draw[thick] (sw.north east) -- node[above, lblsmall, pos=0.52, yshift=1pt]{puerto 2} (h2.west);
+  \draw[thick] (sw.east) -- node[above, lblsmall, yshift=1pt, pos=0.5]{puerto 3} (h3.west);
+  \draw[thick] (sw.south east) -- node[below, lblsmall, pos=0.52, yshift=-1pt]{puerto 4} (h4.west);
+
+  % --- Datos de los hosts ---
+  \node[lblsmall, above=3pt of h1] {200.0.0.1/24\\DG 200.0.0.254};
+  \node[lblsmall, above=3pt of h2] {192.168.1.2/24};
+  \node[lblsmall, above=3pt of h3] {192.168.1.3/24};
+  \node[lblsmall, above=3pt of h4] {192.168.1.4/24};
+  \node[lblsmall, below=3pt of h3] {DG 192.168.1.254};
+
+  % --- Datos del router ---
+  \node[font=\footnotesize\bfseries, above=0.5cm of sw] {NAT (router L3)};
+  \node[font=\scriptsize, anchor=north, align=center, text width=5.2cm] at (4.6,-1.72)
+    {\textbf{Interfaz pública}\\200.0.0.254\\aa:aa:aa};
+  \node[font=\scriptsize, anchor=north, align=center, text width=5.2cm] at (7.4,-1.72)
+    {\textbf{Interfaz privada}\\192.168.1.254\\bb:bb:bb};
+
+  % --- Nombres de las redes ---
+  \node[font=\scriptsize\itshape, text=gray] at (0,-3.3) {Red pública};
+  \node[font=\scriptsize\itshape, text=gray] at (12,-3.3) {Red privada};
+\end{tikzpicture}
+\caption{Topología implementada: un servidor en la red pública y tres clientes en la
+red privada, todos sobre un único switch OpenFlow.}
+\label{fig:topo}
+\end{figure}
 
 \begin{table}[H]
 \centering
-\begin{tabular}{lcc}
+\small
+\begin{tabular}{lccccc}
 \toprule
-\textbf{Interfaz} & \textbf{IP} & \textbf{MAC} \\
+\textbf{Host} & \textbf{Subred} & \textbf{Dirección IP} & \textbf{MAC} & \textbf{Puerto} \\
 \midrule
-Pública (puerto 1)     & \texttt{200.0.0.254}   & \texttt{00:00:00:aa:aa:aa} \\
-Privada (puertos 2--4) & \texttt{192.168.1.254} & \texttt{00:00:00:bb:bb:bb} \\
+h1 & Pública & \texttt{200.0.0.1/24}   & \texttt{00:00:00:00:00:01} & 1 \\
+h2 & Privada & \texttt{192.168.1.2/24} & \texttt{00:00:00:00:00:02} & 2 \\
+h3 & Privada & \texttt{192.168.1.3/24} & \texttt{00:00:00:00:00:03} & 3 \\
+h4 & Privada & \texttt{192.168.1.4/24} & \texttt{00:00:00:00:00:04} & 4 \\
 \bottomrule
 \end{tabular}
-\caption{Interfaces del router implementado sobre el switch s1.}
+\caption{Hosts de la topología y puerto del switch al que están conectados.
+Ninguno tiene entradas ARP estáticas.}
+\label{tab:hosts}
 \end{table}
 
-No existe ninguna entrada ARP estática en ningún host: toda la resolución de
-MACs se hace con el protocolo ARP, manejado por el controlador.
+La topología se define de forma declarativa: las direcciones del router, el host
+público y la lista de hosts privados se declaran en una tabla de datos, y de ella se
+generan los hosts y los enlaces. Agregar un cuarto cliente consiste en agregar una
+fila, sin tocar la lógica de armado. Antes de levantar la red, esa tabla se valida:
+que la IP del router pertenezca a su subred, que las subredes no se superpongan, que
+no haya nombres, IP ni MAC repetidas y que cada host esté dentro de su red. Además,
+el programa imprime el comando exacto que debe usarse para arrancar el controlador,
+para que ambos lados no se desincronicen al cambiar un valor.
 
-\subsection{Clasificación de paquetes}
-Cada paquete IPv4 que llega al controlador se clasifica según sus direcciones
-de origen y destino, con la función \texttt{classify\_packet}:
+\subsection{Modelo de la solución}
+
+El controlador clasifica cada paquete IPv4 que le llega y lo deriva a uno de tres
+caminos: tráfico \textbf{saliente} (origen en la red privada y destino fuera de
+ella), tráfico \textbf{entrante} (destino igual a la IP pública del router) o tráfico
+\textbf{ajeno}, que se descarta. Esta clasificación se hace en un único punto del
+sistema, de modo que el descarte de lo que no corresponde sea explícito y no quede
+repartido en condiciones sueltas a lo largo del código.
 
 \begin{table}[H]
 \centering
-\begin{tabular}{lll}
+\begin{tabular}{llll}
 \toprule
-\textbf{Origen} & \textbf{Destino} & \textbf{Clasificación} \\
+\textbf{Origen} & \textbf{Destino} & \textbf{Clasificación} & \textbf{Acción} \\
 \midrule
-Red privada & Fuera de la red privada & \emph{Saliente} \\
-Fuera de la red privada & IP pública del router & \emph{Entrante} \\
-Cualquier otro caso & --- & \emph{Otro}: se descarta \\
+Red privada & Fuera de la red privada & Saliente & Traducir el origen \\
+Fuera de la red privada & IP pública & Entrante & Traducir el destino \\
+Privada & Privada & Ajena & Descartar \\
+Pública & Pública (otra IP) & Ajena & Descartar \\
 \bottomrule
 \end{tabular}
-\caption{Clasificación de un paquete IPv4.}
+\caption{Clasificación de un paquete IPv4 según sus direcciones de origen y destino.}
+\label{tab:clasif}
 \end{table}
 
-La clasificación se implementa en un único punto:
+El tráfico \emph{privado a privado} se descarta porque no cruza la frontera entre las
+dos redes y el NAT implementado es únicamente saliente; el tráfico \emph{público a
+público} que no se dirige a la IP del router también se descarta, porque el router no
+publica servicios hacia la red pública. Ambos casos quedan registrados en el log para
+que el comportamiento sea observable durante la demostración.
 
-\begin{lstlisting}[caption={Clasificación de paquetes (ext/protorouter.py).}]
-def classify_packet(self, src_ip, dst_ip):
-    src_is_private = self._is_private(src_ip)
-    dst_is_private = self._is_private(dst_ip)
-
-    if src_is_private and not dst_is_private:
-        return DIRECTION_OUTGOING
-    if not src_is_private and not dst_is_private and dst_ip == PUBLIC_IP:
-        return DIRECTION_INCOMING
-    return DIRECTION_OTHER
-\end{lstlisting}
-
-Es importante notar que el tráfico \emph{privado a privado} (por ejemplo
-\texttt{h2} hacia \texttt{h3}) se clasifica como \emph{otro} y se descarta: el
-NAT implementado es únicamente saliente, y estos paquetes no cruzan la frontera
-entre la red privada y la pública. El tráfico \emph{público a público} que no
-tenga como destino la IP del router también se descarta, porque el router no
-ofrece servicios a la red pública en este trabajo.
-
-\subsection{Arquitectura del controlador}
-El módulo \texttt{ext/protorouter.py} mantiene, por cada conexión con el
-switch:
+El estado que mantiene el controlador, por cada conexión con el switch, es el
+siguiente:
 
 \begin{itemize}[nosep]
-    \item una \textbf{tabla ARP dinámica} (\texttt{IP -> (MAC, timestamp,
-          puerto)}, con expiración), en \texttt{arp\_table.py};
-    \item una \textbf{cola de resoluciones pendientes}, con la función
-          \texttt{resolve(ip, callback)} que desliga al llamador;
-    \item la \textbf{tabla NAT} (\texttt{nat\_table.py}), con un registro por
-          conexión, indexada en ambos sentidos y con el conjunto de puertos
-          públicos en uso;
-    \item los \textbf{parámetros de red} (IPs, MACs, subredes, tiempos), que
-          recibe del arranque.
+    \item una \textbf{tabla ARP dinámica}, que asocia cada IP con su MAC, el puerto
+          por el que se aprendió y el instante de aprendizaje;
+    \item una \textbf{cola de resoluciones pendientes}, que asocia cada IP que se
+          está resolviendo con las acciones que deben ejecutarse cuando llegue la
+          respuesta;
+    \item la \textbf{tabla de traducciones}, con un registro por conexión, indexada
+          en ambos sentidos y con el conjunto de puertos públicos en uso;
+    \item los \textbf{parámetros de red y de tiempo}, que se reciben al arrancar.
 \end{itemize}
 
-El flujo de un paquete en el \texttt{PacketIn} es:
+La Figura~\ref{fig:flujo} resume qué componente atiende cada evento. La idea central
+del diseño es que la \textbf{división del trabajo es por evento y no por paquete}: el
+controlador interviene una vez por conexión (y en los eventos de ARP y vencimiento),
+y todos los paquetes de la conexión ya establecida son procesados por el switch.
 
-\begin{enumerate}[nosep]
-    \item Si es \textbf{ARP}: se aprende la tupla (IP, MAC) y se responde o se
-          inunda según corresponda.
-    \item Si es \textbf{IPv4}: se clasifica. Si es \emph{saliente} se crea o se
-          busca el registro NAT y se traduce; si es \emph{entrante} se busca el
-          registro por la clave de vuelta y se traduce de regreso; si es
-          \emph{otro} se descarta.
-    \item Cualquier otro \emph{ethertype} se ignora.
-\end{enumerate}
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    mbox/.style={draw, rounded corners, fill=white, align=center, minimum height=0.85cm, inner sep=4pt},
+    cbox/.style={mbox, fill=fondctrl},
+    dbox/.style={mbox, fill=fondorig},
+    >={Latex[length=2mm]},
+  ]
+  \node[mbox] (pkt) at (0,0) {Paquete\\del host};
+  \node[cbox, minimum width=4.2cm] (c) at (5.2,0)
+       {\textbf{Controlador}\\clasifica, traduce el primer\\paquete e instala 2 reglas};
+  \node[dbox, minimum width=3.6cm] (s) at (10.4,0)
+       {\textbf{Switch}\\traduce y reenvía\\según las reglas};
 
-% =====================================================================
-\clearpage
-\section{La base: tabla NAT y resolución de MACs}
-\label{sec:base}
-% =====================================================================
-Esta parte provee las dos piezas de infraestructura sobre las que se apoyan las
-restantes: el \textbf{almacenamiento de las traducciones} y la
-\textbf{resolución de direcciones MAC}. Ambos se implementaron como módulos
-independientes, en lugar de dejar el estado disperso dentro del controlador,
-para poder probarlos de forma aislada.
+  \draw[->] (pkt) -- node[above, font=\scriptsize]{PacketIn} (c);
+  \draw[->] (c) -- node[above, font=\scriptsize]{FlowMod} (s);
+  \draw[->, dashed] (s.south) to[out=-90, in=-90, looseness=0.35]
+       node[below, font=\scriptsize]{paquetes siguientes (sin controlador)} (pkt.south);
+\end{tikzpicture}
+\caption{Reparto de responsabilidades: un evento de control por conexión y
+procesamiento íntegro en el plano de datos para el resto del tráfico.}
+\label{fig:flujo}
+\end{figure}
 
-\subsection{Tabla ARP (\texttt{ext/arp\_table.py})}
-El protocolo ARP es el componente que permite al NAT escribir una trama sin
-ninguna dirección MAC configurada a mano. La tabla es un diccionario
-\texttt{IP -> ArpEntry}, donde cada entrada guarda la MAC, el puerto del switch
-por el que se aprendió y el instante de aprendizaje:
+\subsection{Diseño de la tabla de traducciones (PAT)}
 
-\begin{lstlisting}[caption={Tabla ARP con expiración (ext/arp\_table.py).}]
-ARP_TIMEOUT = 10
-
-class ArpEntry(object):
-    def __init__(self, mac, port):
-        self.mac = mac
-        self.port = port
-        self.timestamp = time.time()
-
-    def is_expired(self):
-        return time.time() - self.timestamp > ARP_TIMEOUT
-
-
-class ArpTable(object):
-    def __init__(self):
-        self.entries = {}
-
-    def learn(self, ip, mac, port):
-        self.entries[ip] = ArpEntry(mac, port)
-
-    def lookup(self, ip):
-        entry = self.entries.get(ip)
-        if entry is None:
-            return None
-        if entry.is_expired():
-            del self.entries[ip]
-            return None
-        return entry
-
-    def clean_expired_entries(self):
-        expired = [ip for ip, e in self.entries.items() if e.is_expired()]
-        for ip in expired:
-            del self.entries[ip]
-\end{lstlisting}
-
-La expiración se evalúa de dos maneras complementarias: \texttt{lookup}
-considera vencida una entrada en el momento de consultarla (y la borra), y un
-\texttt{Timer} periódico recorre la tabla completa para descartar las que nadie
-consultó. Así una entrada vieja nunca se devuelve como válida, pero tampoco se
-acumula indefinidamente en la tabla.
-
-\subsection{Resolución por \emph{callback}}
-La versión original obligaba a que quien quería reenviar un paquete manejara a
-mano la cola de espera. Se reemplazó por una función simple:
-
-\begin{lstlisting}[caption={``Resolveme esta IP y avisame cuando la tengas''.}]
-def resolve(self, ip, callback):
-    entry = self.arp_table.lookup(ip)
-    if entry is not None:
-        callback(entry)          # ya la conozco: respuesta inmediata
-        return
-
-    if ip in self.pending:
-        self.pending[ip].append(callback)   # ya hay un request en vuelo
-        return
-
-    self.pending[ip] = [callback]
-    self.pending_time[ip] = time.time()
-    self.send_arp_request(ip)
-\end{lstlisting}
-
-El llamador entrega una función (por ejemplo
-\texttt{lambda e: self.forward\_outgoing(...)}) y se desentiende del resto. Si
-la MAC ya se conoce, el \emph{callback} se ejecuta en el acto; si no, se encola
-y se dispara un único ARP request por IP, aunque haya varios paquetes
-esperando. Al llegar la respuesta, \texttt{flush\_pending} ejecuta todos los
-\emph{callbacks} acumulados con la entrada ya resuelta.
-
-\subsection{La cola de pendientes corregida}
-La versión original tenía dos defectos: la cola guardaba tuplas de distinta
-longitud según el camino por el que entraba el paquete
-(\texttt{(packet, in\_port)} al encolar y \texttt{(packet, in\_port,
-time\_timestamp)} si ya había un request en vuelo), lo que hacía fallar el
-desencole con más de un paquete; y \texttt{pending\_time} sólo se actualizaba
-en ese segundo camino, de modo que muchas entradas de espera no vencían nunca.
-La solución fue uniformar el contenido de la cola (ahora son \emph{callbacks},
-sin tuplas de tamaño variable) y registrar el instante de encolado
-\textbf{siempre} que se crea una entrada nueva, que es el único momento en que
-se arranca una espera.
-
-% =====================================================================
-\clearpage
-\section{Diseño de la tabla NAT (PAT)}
-% =====================================================================
-\subsection{Registro por conexión}
-Cada conexión traducida se representa con la clase \texttt{NatEntry}:
+Cada conexión traducida se representa con un registro que contiene el protocolo de
+transporte, la IP y el puerto de origen del host privado, la IP y el puerto de
+destino en el servidor público y el puerto público asignado por el router. Además,
+el registro lleva tres campos de control: si las reglas ya fueron instaladas, cuántas
+de las dos reglas siguen vivas y desde cuándo espera una resolución de ARP para poder
+instalarlas. La Tabla~\ref{tab:registro} describe el modelo.
 
 \begin{table}[H]
 \centering
@@ -347,456 +406,698 @@ Cada conexión traducida se representa con la clase \texttt{NatEntry}:
 \toprule
 \textbf{Campo} & \textbf{Significado} \\
 \midrule
-\texttt{proto}         & Protocolo: 1 (ICMP), 6 (TCP) o 17 (UDP) \\
-\texttt{private\_ip}   & IP del host interno \\
-\texttt{private\_port} & Puerto origen del host interno (o identificador ICMP) \\
-\texttt{remote\_ip}    & IP del host público (servidor) \\
-\texttt{remote\_port}  & Puerto destino en el servidor (o identificador ICMP) \\
-\texttt{public\_port}  & Puerto público asignado en el router \\
-\texttt{flows\_installed} & Indica si las reglas de la conexión ya están en el switch \\
+Protocolo        & ICMP, TCP o UDP \\
+IP privada       & Dirección del host interno \\
+Puerto privado   & Puerto de origen del host interno (o identificador de eco en ICMP) \\
+IP remota        & Dirección del host público \\
+Puerto remoto    & Puerto de destino en el servidor (o identificador de eco en ICMP) \\
+Puerto público   & Puerto asignado por el router en la IP pública \\
+Estado de flujos & Reglas instaladas y cuántas siguen vivas \\
+Espera de ARP    & Instante desde el cual el registro no puede instalar sus reglas \\
 \bottomrule
 \end{tabular}
-\caption{Campos de un registro de la tabla NAT.}
+\caption{Modelo de un registro de la tabla de traducciones.}
+\label{tab:registro}
 \end{table}
 
-La tabla se indexa en ambos sentidos:
+La tabla se indexa en \textbf{ambos sentidos} (Figura~\ref{fig:indices}). La
+\textbf{clave de ida}, formada por el protocolo, las direcciones y puertos de ambos
+extremos, responde si un paquete que sale de la red privada ya tiene traducción. La
+\textbf{clave de vuelta}, formada por el protocolo, el puerto público y los datos del
+servidor, responde si un paquete que llega de la red pública corresponde a alguna
+conexión y a qué host debe entregarse.
 
-\begin{itemize}[nosep]
-    \item \textbf{Clave saliente} $(proto,\ IP_{priv},$ $port_{priv},$
-          $IP_{remota},\ port_{remoto})$: para detectar si un paquete saliente
-          pertenece a una conexión ya traducida.
-    \item \textbf{Clave entrante} $(proto,\ port_{publico},$ $IP_{remota},$
-          $port_{remoto})$: para demuxear los paquetes que llegan de la red
-          pública y saber a qué host privado corresponden.
-\end{itemize}
-
-Las dos claves apuntan al mismo registro, de modo que la tabla es consistente
-por construcción y el demuxeo del tráfico entrante, que es la operación
-crítica, cuesta $O(1)$.
-
-\subsection{El módulo \texttt{NatTable}}
-La tabla y su política de asignación viven en un módulo propio,
-\texttt{ext/nat\_table.py}, que concentra el estado y lo expone con una API
-chica:
-
-\begin{table}[H]
+\begin{figure}[H]
 \centering
-\begin{tabular}{lp{0.62\textwidth}}
-\toprule
-\textbf{Método} & \textbf{Qué hace} \\
-\midrule
-\texttt{add(proto, ip, port, ip\_rem, port\_rem)} &
-  Crea la traducción si no existe y devuelve su entrada. Es idempotente: dos
-  paquetes de la misma conexión obtienen el mismo registro. \\
-\texttt{lookup\_outgoing(...)} & Busca por la clave de ida. \\
-\texttt{lookup\_incoming(...)} & Busca por la clave de vuelta (la que usan los
-  paquetes que vuelven del servidor). \\
-\texttt{release(entry)} & Borra la entrada de ambos índices y libera el puerto
-  público. \\
-\texttt{free\_port(proto)} & Devuelve el primer puerto del rango libre para ese
-  protocolo, o \texttt{None} si no queda ninguno. \\
-\bottomrule
-\end{tabular}
-\caption{API de la tabla de traducciones.}
-\end{table}
+\begin{tikzpicture}[
+    font=\small,
+    tbox/.style={draw, rounded corners, fill=fondorig, align=center, font=\scriptsize, minimum width=3.8cm, minimum height=1.5cm, inner sep=3pt},
+    rbox/.style={draw, rounded corners, fill=fondopriv, align=center, font=\scriptsize, minimum width=4.2cm, minimum height=2.3cm, inner sep=3pt},
+    >={Latex[length=2mm]},
+  ]
+  \node[tbox] (ida) at (0,0)
+    {\textbf{Índice de ida}\\[2pt]protocolo\\IP y puerto privados\\IP y puerto remotos};
+  \node[rbox] (reg) at (5.6,0)
+    {\textbf{Registro único}\\[2pt]IP y puerto privados\\\\
+     \textbf{puerto público}\\\\
+     IP y puerto remotos};
+  \node[tbox] (vuelta) at (11.2,0)
+    {\textbf{Índice de vuelta}\\[2pt]protocolo\\\textbf{puerto público}\\\\IP y puerto remotos};
 
-El punto importante es que la asignación de puerto y la inserción en los dos
-índices ocurren en una sola operación atómica: no existe forma de crear el
-registro de ida sin que quede también el de vuelta, ni de liberar uno dejando
-el otro. La clase \texttt{NatEntry} expone \texttt{outgoing\_key()} e
-\texttt{incoming\_key()} para que los índices se construyan del mismo modo en
-todo el código.
+  \draw[->, thick] (ida.east) -- node[above, font=\scriptsize, yshift=1pt]{apunta} (reg.west);
+  \draw[<-, thick] (reg.east) -- node[above, font=\scriptsize, yshift=1pt]{apunta} (vuelta.west);
+
+  \node[font=\scriptsize, text=gray, align=center, below=0.25cm of ida]
+    {paquete que sale};
+  \node[font=\scriptsize, text=gray, align=center, below=0.25cm of vuelta]
+    {paquete que vuelve};
+\end{tikzpicture}
+\caption{Doble indexación de la tabla de traducciones. Las dos claves apuntan al
+mismo registro, así que la tabla es consistente por construcción.}
+\label{fig:indices}
+\end{figure}
+
+El aspecto importante es que la clave de vuelta \textbf{no incluye la dirección
+privada}, porque el servidor no la conoce: lo único que identifica al flujo en ese
+sentido es el puerto público. Eso permite resolver en tiempo constante a qué host
+interno corresponde cada paquete entrante, sin recorrer la tabla; el demultiplexado
+del tráfico de retorno es, precisamente, la operación crítica de un NAT.
 
 \subsection{Asignación de puertos públicos}
-La política de asignación es:
+
+La política de asignación de puertos persigue tres objetivos del enunciado: asignar
+puertos disponibles, evitar colisiones y reutilizar recursos cuando sea posible.
 
 \begin{enumerate}[nosep]
-    \item \textbf{Para ICMP, el ``puerto'' es el identificador de echo}, que no
-          se traduce: se usa tal cual como puerto público. Esto es lo que
-          implementa la regla ``en el ping sólo se cambia la IP''
-          (sección~\ref{sec:icmp}).
-    \item \textbf{Para TCP y UDP}, si el puerto origen privado cae en el rango
-          asignable $[10000, 65535]$ y no está en uso para ese protocolo,
-          \textbf{se reutiliza}. Esto evita traducciones innecesarias y hace
-          que el puerto visto en el servidor coincida con el del cliente.
-    \item Si no, se toma el primer puerto libre del rango avanzando desde el
-          inicio. Si el rango se agota, \texttt{add} devuelve \texttt{None} y
-          el controlador descarta el paquete en lugar de traducir a un puerto
-          inexistente.
-    \item El par $(proto, puerto)$ se marca como usado mientras la conexión
-          exista; \texttt{release} lo devuelve al conjunto libre.
-\end{enumerate}
-
-Con esto se garantiza que dos conexiones simultáneas nunca obtengan el mismo
-par $(proto,\ puerto\_publico)$, que es exactamente la colisión que el PAT
-tiene que evitar.
-
-\subsection{Traducción de paquetes}
-\paragraph{Sentido saliente.} Se reescriben la IP origen
-($\rightarrow$ \texttt{PUBLIC\_IP}), el puerto origen TCP/UDP
-($\rightarrow$ puerto público asignado) y la MAC origen
-($\rightarrow$ \texttt{PUBLIC\_MAC}). La MAC destino se resuelve por ARP.
-
-\paragraph{Sentido entrante.} Simétricamente, se reescriben la IP destino
-($\rightarrow$ IP del host privado original), el puerto destino
-($\rightarrow$ puerto privado original) y la MAC destino (la del host privado),
-con la MAC origen reemplazada por \texttt{PRIVATE\_MAC}.
-
-Los checksums de IP y de la capa de transporte se recalculan al reempaquetar el
-paquete con la librería de POX (\texttt{pack()}).
-
-\subsection{ICMP: el ping}
-\label{sec:icmp}
-El enunciado pide TCP y UDP, pero la topología de prueba usa \texttt{ping}. El
-ICMP echo no tiene puertos, pero sí un \emph{identificador} de echo que cumple
-la misma función de demultiplexado. El diseño adoptado (acordado con las otras
-partes) es:
-
-\begin{itemize}[nosep]
-    \item \textbf{En el ping solo se cambia la IP}: el identificador de echo se
-          mantiene tal cual, se usa como ``puerto'' para indexar el registro y
-          se agrega a la clave de la tabla.
-    \item Se instalan las mismas dos reglas de ida y vuelta que para TCP/UDP;
-          en el \emph{match} se usa el tipo de ICMP
-          (\texttt{tp\_src}=8 para el request, \texttt{tp\_src}=0 para el
-          reply) y no se agregan acciones de puerto.
-\end{itemize}
-
-\textbf{Limitación conocida y aceptada:} como el identificador de echo no se
-traduce, si dos hosts privados hacen ping al mismo servidor al mismo tiempo,
-las respuestas pueden llegar a uno solo de ellos. El identificador de echo lo
-elige el sistema operativo y cada host aplica el NAT por separado, así que los
-dos registros pueden compartir la misma clave entrante: el segundo pisa al
-primero. Es una consecuencia directa de respetar la regla ``en el ping solo se
-cambia la IP'' y se documenta acá en lugar de ocultarse.
-
-% =====================================================================
-\clearpage
-\section{Estrategia de instalación de flujos}
-\label{sec:flows}
-% =====================================================================
-El objetivo es que \textbf{el switch haga todo el trabajo} una vez establecida
-la traducción, minimizando la intervención del controlador.
-
-\subsection{Cuándo se instalan}
-Las reglas de una conexión se instalan cuando aparece el primer paquete de esa
-conexión, siempre que se conozcan \textbf{las dos MACs} involucradas (la del
-servidor y la del host privado). Si falta alguna, se dispara la resolución ARP
-y la instalación se reintenta cuando llega la respuesta: el registro queda con
-\texttt{flows\_installed = False} y el primer paquete posterior que vuelva al
-controlador la completa. Instalar la regla con una MAC todavía desconocida
-enviaría tráfico a una dirección inválida, por eso se espera.
-
-\subsection{Reglas instaladas}
-Por cada conexión se envían dos \texttt{ofp\_flow\_mod} con \emph{match
-exacto}:
-
-\begin{itemize}[nosep]
-    \item \textbf{Ida} (privado $\rightarrow$ público): \emph{match} por
-          \texttt{in\_port} (el puerto del host privado), \texttt{dl\_type}
-          = 0x800 (IPv4), \texttt{nw\_src}, \texttt{nw\_dst},
-          \texttt{nw\_proto}, \texttt{tp\_src} y \texttt{tp\_dst} de la
-          conexión. Acciones: \texttt{SET\_NW\_SRC} (IP pública),
-          \texttt{SET\_TP\_SRC} (puerto público, sólo si cambia),
-          \texttt{SET\_DL\_SRC} (MAC pública), \texttt{SET\_DL\_DST} (MAC del
-          servidor) y \texttt{OUTPUT} por el puerto público.
-    \item \textbf{Vuelta} (público $\rightarrow$ privado): \emph{match} por
-          \texttt{in\_port} = puerto público, \texttt{nw\_src} = servidor,
-          \texttt{nw\_dst} = IP pública, \texttt{nw\_proto},
-          \texttt{tp\_src} = puerto del servidor y \texttt{tp\_dst} = puerto
-          público. Acciones: \texttt{SET\_NW\_DST} (IP privada),
-          \texttt{SET\_TP\_DST} (puerto privado, sólo si cambia),
-          \texttt{SET\_DL\_SRC} (MAC privada), \texttt{SET\_DL\_DST} (MAC del
-          host privado) y \texttt{OUTPUT} por el puerto del host.
-\end{itemize}
-
-Como el \emph{match} es exacto e incluye los puertos, las reglas de conexiones
-distintas no colisionan.
-
-\subsection{Timeouts}
-Cada regla se instala con:
-
-\begin{itemize}[nosep]
-    \item \texttt{idle\_timeout = 10} s: si no pasa tráfico, la regla se
-          elimina;
-    \item \texttt{hard\_timeout = 60} s: límite máximo de vida;
-    \item el flag \texttt{OFPFF\_SEND\_FLOW\_REM}, para que el switch avise al
-          controlador cuando la regla se elimina.
-\end{itemize}
-
-El aviso de remoción es la base sobre la que libera los puertos y
-reinstala las reglas si la conexión vuelve a tener tráfico
-(sección~\ref{sec:config}).
-
-\subsection{El primer paquete no se pierde}
-Con reglas instaladas, los paquetes siguientes los procesa el switch. El
-paquete que disparó todo, en cambio, ya está en el controlador y si se lo
-descartara se perdería, por ejemplo, el SYN de una conexión TCP. Por eso:
-
-\begin{itemize}[nosep]
-    \item se traduce el paquete en memoria (IP, puerto y MAC de origen) y se
-          reenvía con \texttt{ofp\_packet\_out};
-    \item si falta la MAC destino, el paquete se encola \emph{ya traducido} en
-          la cola de pendientes y se envía cuando llega la respuesta ARP;
-    \item los flujos que habían quedado frenados se completan con el próximo
-          paquete de la conexión que llegue al controlador.
-\end{itemize}
-
-% =====================================================================
-\clearpage
-\section{Decisiones de diseño}
-% =====================================================================
-\begin{enumerate}
-    \item \textbf{Match exacto por conexión} en lugar de reglas agregadas por
-          host: evita ambigüedades al demuxear el tráfico entrante y hace
-          trivial identificar a qué conexión pertenece cada regla. El costo es
-          una entrada más en la tabla de flujos por conexión, aceptable para la
-          escala del TP.
-    \item \textbf{Doble indexación} de la tabla NAT: la clave entrante no
-          incluye la IP privada, y justamente por eso permite averiguar a qué
-          host va el paquete en $O(1)$, sin recorrer la tabla.
-    \item \textbf{Una sola función de clasificación}. La decisión
-          saliente/entrante/otro está en un único lugar
-          (\texttt{classify\_packet}), no repartida entre condiciones sueltas
-          dentro del manejo de paquetes. Esto hace que el descarte de tráfico
-          que no corresponde sea explícito y fácil de testear.
-    \item \textbf{El primer paquete se traduce y se reenvía}, en lugar de
-          descartarlo esperando que el emisor retransmita: una conexión TCP no
-          pierde su SYN y el ping no pierde el primer echo request.
-    \item \textbf{Instalar reglas sólo con ambas MACs resueltas}: evita reglas
-          con MACs vacías que mandarían tráfico a la nada.
-    \item \textbf{Reutilización del puerto origen cuando es posible}: reduce la
-          cantidad de reescrituras (sólo se cambia el puerto si el asignado
-          difiere) y simplifica el diagnóstico, porque el puerto que se ve en
+    \item Si el puerto de origen privado ya está dentro del rango asignable y ese
+          par (protocolo, puerto) no está en uso, \textbf{se reutiliza}. Además de
+          ahorrar traducciones, tiene un beneficio de diagnóstico: el puerto que ve
           el servidor es el mismo que usa el cliente.
-    \item \textbf{ICMP tratado como un flujo sin puertos}: se reutiliza el
-          mismo par de reglas cambiando únicamente el criterio de
-          identificación (tipo de ICMP en lugar de puerto). Se evita así una
-          rama de código separada para el ping en la parte de flujos.
+    \item Si el puerto privado está fuera del rango o ya está ocupado, se toma el
+          primer puerto libre del rango, avanzando desde el extremo inferior.
+    \item Si el rango se agota, la conexión \textbf{no} se traduce: el paquete se
+          descarta en lugar de reenviarse hacia un puerto inexistente.
+    \item El par (protocolo, puerto) queda reservado mientras la conexión exista y
+          se devuelve al conjunto libre cuando el registro se libera.
 \end{enumerate}
 
-% =====================================================================
-\clearpage
-\section{Problemas encontrados y soluciones}
-% =====================================================================
-\begin{description}[style=nextline]
-    \item[Paquetes con la MAC destino sin resolver.] Si se traduce y se envía
-    un paquete sin conocer la MAC del servidor, la trama sale con una MAC
-    inválida y se pierde, y además no se pueden armar las reglas. Solución: el
-    paquete se encola ya traducido y se reenvía al llegar la respuesta ARP; las
-    reglas se instalan en ese momento.
-
-    \item[El primer paquete se perdería.] Al instalar reglas, los paquetes
-    siguientes ya no llegan al controlador; pero el primero sí llegó y
-    traducirlo no alcanza si no se lo reenvía. Solución: reenviarlo con
-    \texttt{ofp\_packet\_out} además de instalar las reglas.
-
-    \item[Checksums.] Cambiar una IP o un puerto invalida el checksum de IP y el
-    de TCP/UDP. Se resuelve reempaquetando el paquete con la librería de POX,
-    que recalcula ambos checksums con los valores finales.
-
-    \item[El identificador de echo en ICMP.] Si se tradujera el identificador
-    de echo a un ``puerto'' público distinto para cada host, dos hosts podrían
-    hacer ping al mismo servidor sin pisarse. Al mantenerlo fijo (regla
-    ``en el ping solo se cambia la IP''), los dos registros pueden compartir la
-    clave entrante y las respuestas pueden ir a uno solo. Se optó por documentar
-    la limitación (sección~\ref{sec:icmp}) y mantener el diseño acordado con
-    las otras partes.
-
-    \item[Import del módulo de la tabla ARP.] Dentro de POX el controlador se
-    importa como \texttt{protorouter} (con \texttt{ext/} en el \emph{path}),
-    pero las pruebas unitarias lo importan como \texttt{ext.protorouter}. El
-    import directo fallaba en el segundo caso. Solución: intentar primero el
-    import absoluto y caer al relativo (\texttt{try/except ImportError}), sin
-    cambiar el comportamiento dentro de POX.
-
-    \item[Pruebas unitarias sin switch ni timers.] Construir el router real
-    abre \emph{timers} de POX y exige una conexión OpenFlow. Para poder probar
-    la lógica de traducción de forma aislada se instancia la clase sin ejecutar
-    su constructor (\texttt{\_\_new\_\_}), se inyecta un objeto de conexión que
-    sólo registra lo enviado y se reemplaza el envío de paquetes por una lista.
-\end{description}
-
-% =====================================================================
-\clearpage
-\section{Pruebas realizadas}
-% =====================================================================
-\subsection{Pruebas unitarias (verificadas)}
-Se agregaron pruebas automatizadas en \texttt{tests/unit/protorouter\_test.py}
-que cubren la traducción y las reglas del NAT. Se ejecutan desde la raíz del
-repositorio:
-
-\begin{lstlisting}[language=bash, caption={Ejecución de las pruebas unitarias.}]
-python -m unittest tests.unit.protorouter_test
-\end{lstlisting}
-
-Resultado obtenido: \textbf{25 pruebas, todas en verde}.
+El protocolo forma parte de la clave, de modo que un mismo número de puerto puede
+estar en uso simultáneamente por TCP y por UDP. La Tabla~\ref{tab:ejemplo-puertos}
+muestra el efecto buscado con dos clientes que, por casualidad, eligen el mismo
+puerto de origen.
 
 \begin{table}[H]
 \centering
-\begin{tabular}{p{0.34\textwidth}p{0.52\textwidth}}
+\begin{tabular}{llclll}
+\toprule
+\textbf{Proto.} & \textbf{IP privada} & \textbf{Puerto} & \textbf{IP pública} & \textbf{Puerto púb.} & \textbf{Servidor} \\
+\midrule
+TCP  & 192.168.1.2 & 40000 & 200.0.0.254 & 40000 & 200.0.0.1:9000 \\
+TCP  & 192.168.1.3 & 40000 & 200.0.0.254 & \textbf{10000} & 200.0.0.1:9000 \\
+UDP  & 192.168.1.2 & 5000  & 200.0.0.254 & \textbf{10000} & 200.0.0.1:9001 \\
+ICMP & 192.168.1.4 & eco   & 200.0.0.254 & eco (sin cambiar) & 200.0.0.1 \\
+\bottomrule
+\end{tabular}
+\caption{Asignación de puertos públicos. El primer cliente conserva su puerto; el
+segundo, con el mismo puerto de origen, recibe otro. TCP y UDP pueden compartir el
+número.}
+\label{tab:ejemplo-puertos}
+\end{table}
+
+\subsection{Traducción de paquetes}
+
+En el sentido \textbf{saliente} se reescriben la IP de origen (por la IP pública), el
+puerto de origen (por el puerto público asignado) y la MAC de origen (por la MAC
+pública); la MAC de destino se obtiene por ARP. En el sentido \textbf{entrante} se
+hace lo simétrico: la IP de destino vuelve a ser la del host privado, el puerto de
+destino vuelve a ser el original y la MAC de destino pasa a ser la del host, con la
+MAC de origen reemplazada por la MAC privada del router. La Figura~\ref{fig:traduccion}
+ilustra ambas transformaciones en un mismo intercambio.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    pktbox/.style={draw, rounded corners, fill=white, align=center, font=\scriptsize, inner sep=4pt},
+    >={Latex[length=2mm]},
+  ]
+  % --- Saliente ---
+  \node[font=\scriptsize\bfseries, anchor=west] at (-1.9,0) {Saliente:};
+  \node[pktbox] (o1) at (2.2,0) {IP: 192.168.1.2\\puerto: 40000\\MAC: 00:00:02};
+  \node[pktbox, fill=fondopub] (o2) at (7.4,0) {IP: 200.0.0.254\\puerto: 10000\\MAC: aa:aa:aa};
+  \draw[->, thick] (o1) -- (o2)
+    node[midway, above, font=\scriptsize, yshift=1pt]{traducción de origen};
+  \node[font=\scriptsize, below=2pt of o1] {host h2};
+  \node[font=\scriptsize, below=2pt of o2] {sale hacia el servidor};
+
+  % --- Entrante ---
+  \node[font=\scriptsize\bfseries, anchor=west] at (-1.9,-2.6) {Entrante:};
+  \node[pktbox, fill=fondopub] (i1) at (2.2,-2.6) {IP: 200.0.0.1\\puerto: 9000\\MAC: 00:00:01};
+  \node[pktbox, fill=fondopriv] (i2) at (7.4,-2.6) {IP: 192.168.1.2\\puerto: 40000\\MAC: bb:bb:bb};
+  \draw[->, thick] (i1) -- (i2)
+    node[midway, above, font=\scriptsize, yshift=1pt]{traducción de destino};
+  \node[font=\scriptsize, below=2pt of i1] {respuesta del servidor};
+  \node[font=\scriptsize, below=2pt of i2] {host h2};
+\end{tikzpicture}
+\caption{Transformaciones que aplica el NAT en cada sentido. Los checksums de IP y
+de transporte se recalculan al reempaquetar el paquete.}
+\label{fig:traduccion}
+\end{figure}
+
+En ambos sentidos, cambiar una dirección o un puerto invalida el checksum de IP y el
+del protocolo de transporte correspondiente. En lugar de manipularlos manualmente, el
+paquete se reempaqueta con la librería de POX, que recalcula los checksums con los
+valores finales.
+
+\subsection{ICMP: el ping}
+
+El enunciado exige soporte de TCP y UDP, pero la verificación básica propuesta
+consiste en un \emph{ping} desde un host privado hacia el servidor. ICMP echo no
+tiene puertos, pero sí un identificador de eco que cumple la misma función de
+demultiplexado, de modo que puede tratarse como un flujo más. La decisión adoptada
+fue que \textbf{en el ping sólo se cambia la dirección IP}: el identificador de eco se
+mantiene, se usa como ``puerto'' para indexar el registro y se incluye en las claves
+de la tabla. Las reglas se instalan igual que para TCP y UDP, pero el criterio de
+coincidencia es el tipo de ICMP (petición de eco en un sentido, respuesta de eco en
+el otro) y no se agregan acciones de reescritura de puerto. El controlador acepta
+únicamente peticiones de eco salientes y respuestas de eco entrantes; cualquier otro
+mensaje ICMP se descarta, para que un mensaje de error, por ejemplo un destino
+inalcanzable, no interrumpa una conexión en curso.
+
+\subsection{Manejo de ARP}
+
+El manejo de ARP es lo que permite que el NAT arme una trama sin ninguna dirección
+MAC configurada a mano, y cubre los dos roles que pide el enunciado: responder las
+consultas dirigidas al router y generar consultas cuando hay que resolver una MAC.
+
+\paragraph{Tabla ARP dinámica.} Asocia cada IP con una entrada que guarda la MAC, el
+puerto del switch por el que se aprendió y el instante de aprendizaje. Toda trama
+ARP que llega ---petición o respuesta--- actualiza la tabla: no hace falta esperar la
+respuesta para aprender, porque la petición ya trae la MAC y la IP de quien pregunta.
+La expiración funciona de dos maneras complementarias: una entrada vencida se
+descarta en el momento en que se la consulta, y además una tarea periódica recorre la
+tabla para eliminar las que nadie consulta. Así nunca se devuelve una entrada vieja
+como válida, pero la tabla tampoco crece de forma indefinida.
+
+\paragraph{Responder consultas.} El controlador responde únicamente las peticiones
+dirigidas a una de las dos direcciones IP del router: a quien pregunte por la
+interfaz privada le contesta con la MAC privada, y a quien pregunte por la interfaz
+pública, con la MAC pública. Las consultas por cualquier otra dirección se ignoran.
+Esto es lo que permite que ningún host tenga ARP estático.
+
+\paragraph{Generar consultas.} Cuando hay que reenviar un paquete y no se conoce la
+MAC de destino, el controlador encola la operación y dispara una consulta ARP. La
+consulta se emite con la dirección IP y la MAC de la interfaz que corresponde a la
+red de la dirección buscada; si la dirección no pertenece a ninguna de las dos redes,
+no se emite. La Figura~\ref{fig:arp} resume la lógica de resolución.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    mbox/.style={draw, rounded corners, fill=white, align=center,
+                 text width=2.9cm, minimum height=1.05cm, inner sep=3pt},
+    dec/.style={draw, diamond, aspect=2.0, fill=fondorig, align=center,
+                inner sep=2pt, font=\scriptsize, text width=1.9cm},
+    ar/.style={->, >={Latex[length=2mm]}},
+    lbl/.style={font=\scriptsize, fill=white, inner sep=1.5pt},
+  ]
+  % fila 1
+  \node[mbox] (in) at (0,0) {Se necesita una MAC};
+  % fila 2
+  \node[dec] (q1) at (4.6,0) {¿Está en la tabla ARP?};
+  % fila 3 (resultado si)
+  \node[mbox, fill=fondopriv] (ok) at (4.6,2.4) {Ejecutar la acción en el acto};
+  % fila 4 (no -> segunda decisión)
+  \node[dec] (q2) at (9.6,0) {¿Hay una consulta en vuelo?};
+  % fila 5
+  \node[mbox] (cola) at (9.6,-2.6) {Encolar la acción en esa consulta};
+  \node[mbox] (enviar) at (4.6,-2.6) {Encolar la acción y enviar el ARP};
+
+  \draw[ar] (in) -- (q1);
+  \draw[ar] (q1.north) -- node[lbl]{sí} (ok.south);
+  \draw[ar] (q1.east) -- node[lbl]{no} (q2.west);
+  \draw[ar] (q2.south) -- node[lbl]{sí} (cola.north);
+  \draw[ar] (q2.west) -- ++(-1.2,0) |- node[lbl, pos=0.25]{no} (enviar.east);
+
+  % respuesta ARP: vuelve a la decision inicial
+  \draw[ar, dashed, thick] (enviar.north) -- (q1.south)
+      node[lbl, midway, xshift=-1.45cm]{respuesta ARP};
+
+  \node[font=\scriptsize\itshape, text=gray, anchor=north, text width=12cm, align=center]
+    at (4.6,-3.5) {Sin respuesta dentro del tiempo de espera,\\
+                   las acciones encoladas se descartan};
+\end{tikzpicture}
+\caption{Resolución de direcciones MAC mediante una cola de acciones pendientes.}
+\label{fig:arp}
+\end{figure}
+
+La interfaz que se usa como origen de la consulta depende de la red de la dirección
+buscada, de modo que se resuelven por igual la MAC de los hosts privados y la del
+servidor público, tal como pide el enunciado. Un detalle importante es que, cuando se
+encola, el paquete ya está traducido: al llegar la respuesta sólo hay que completar la
+MAC de destino y enviarlo.
+
+\subsection{Estrategia de instalación de flujos}
+
+El objetivo es que el switch haga todo el trabajo una vez establecida la traducción.
+Las reglas de una conexión se instalan cuando aparece su primer paquete y se conocen
+\textbf{las dos MAC involucradas}: la del servidor y la del host privado. Si falta
+alguna, se dispara la resolución ARP sin bloquear el controlador, el paquete ya
+traducido queda esperando y las reglas se instalan al llegar la respuesta. Instalar
+una regla con una MAC desconocida enviaría tráfico a una dirección inválida, y por eso
+se espera.
+
+Por cada conexión se instalan dos reglas de \emph{match} exacto, una por sentido,
+cuyo contenido se resume en la Tabla~\ref{tab:flujos}. Como la coincidencia incluye
+los puertos, las reglas de conexiones distintas no pueden colisionar, y cada aviso de
+vencimiento puede asociarse sin ambigüedad al registro que le dio origen.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.2\textwidth}p{0.34\textwidth}p{0.36\textwidth}}
+\toprule
+ & \textbf{Regla de ida} & \textbf{Regla de vuelta} \\
+\midrule
+Sentido & Privado $\rightarrow$ público & Público $\rightarrow$ privado \\
+\midrule
+Coincidencia &
+Puerto de entrada del host privado; IPv4; IP y puerto de origen privados; IP y
+puerto del servidor. En ICMP, en lugar de puertos, el tipo de eco. &
+Puerto de entrada público; IPv4; IP y puerto del servidor; IP pública y puerto
+público de destino. En ICMP, el tipo de eco. \\
+\midrule
+Acciones &
+IP de origen por la pública; puerto de origen por el público (si cambia); MAC de
+origen por la pública; MAC de destino por la del servidor; salida por el puerto
+público. &
+IP de destino por la privada; puerto de destino por el privado (si cambia); MAC de
+origen por la privada; MAC de destino por la del host; salida por el puerto del
+host. \\
+\bottomrule
+\end{tabular}
+\caption{Reglas OpenFlow instaladas por cada conexión.}
+\label{tab:flujos}
+\end{table}
+
+Las acciones de reescritura de puerto se omiten cuando el puerto público coincide con
+el privado, para no agregar modificaciones innecesarias. Cada regla se instala con un
+tiempo de inactividad y un tiempo de vida máximo, y con la marca que hace que el
+switch \textbf{avise al controlador} cuando la elimina. Ese aviso es la pieza que
+mantiene sincronizados el estado del controlador y el del switch: sin él, el
+controlador no sabría cuándo un puerto público quedó libre ni cuándo una conexión
+dejó de tener reglas.
+
+Un punto que merece atención es el \textbf{primer paquete}. El paquete que originó la
+conexión ya está en el controlador: instalar reglas no lo procesa, y descartarlo
+significaría perder el pedido de conexión de TCP o el primer eco. Por eso se lo
+traduce en memoria y se lo reenvía al switch, además de instalar las reglas.
+
+\subsection{Ciclo de vida de una conexión}
+
+La Figura~\ref{fig:ciclo} integra todo lo anterior en la secuencia completa, desde
+que el host privado envía el primer paquete hasta que la conexión se libera.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    font=\small,
+    pbox/.style={draw, rounded corners, fill=white, align=center, minimum height=0.95cm,
+                 text width=8.6cm, inner sep=4pt, font=\small},
+    cbox/.style={pbox, fill=fondctrl},
+    dbox/.style={pbox, fill=fondorig},
+    >={Latex[length=2mm]},
+    node distance=0.32cm,
+  ]
+  \node[pbox] (p1) {1. El host privado envía el primer paquete de la conexión.};
+  \node[cbox, below=of p1] (p2) {2. El controlador clasifica el paquete como saliente,
+        crea el registro y asigna el puerto público.};
+  \node[cbox, below=of p2] (p3) {3. Si falta alguna MAC, encola el paquete ya traducido
+        y resuelve por ARP; si están las dos, sigue.};
+  \node[cbox, below=of p3] (p4) {4. Reenvía el paquete traducido e instala las dos reglas
+        (ida y vuelta).};
+  \node[dbox, below=of p4] (p5) {5. Estado estable: el switch traduce y reenvía todo el
+        tráfico de la conexión, en ambos sentidos.};
+  \node[cbox, below=of p5] (p6) {6. Al vencer una regla el switch avisa; el controlador
+        libera el registro o reinstala las reglas.};
+
+  \foreach \a/\b in {p1/p2,p2/p3,p3/p4,p4/p5,p5/p6} \draw[->] (\a) -- (\b);
+\end{tikzpicture}
+\caption{Ciclo de vida de una conexión traducida.}
+\label{fig:ciclo}
+\end{figure}
+
+\subsection{Vencimiento de reglas y liberación de recursos}
+
+Los vencimientos son la parte del diseño que sincroniza los dos planos. Cada regla
+tiene dos temporizadores: uno por inactividad y otro de vida máxima. Como las reglas
+se instalan con el aviso de remoción habilitado, el switch informa al controlador
+cuando elimina una, y el controlador puede reaccionar. La decisión de qué hacer
+depende de \textbf{cuántas reglas de la conexión siguen vivas}:
+
+\begin{itemize}[nosep]
+    \item Si venció una regla pero la otra sigue activa, el registro \textbf{no se
+          toca}. Que una regla haya quedado inactiva no significa que la conexión
+          haya terminado: un flujo de UDP puede tener tráfico en un solo sentido, por
+          ejemplo del servidor al cliente. Liberar el puerto en ese momento cortaría
+          la conexión.
+    \item Si vencieron \textbf{las dos por inactividad}, la conexión terminó: se libera
+          el puerto público y el registro, y el recurso queda disponible para otra
+          conexión.
+    \item Si vencieron \textbf{las dos por vida máxima}, la conexión puede seguir
+          viva: se conserva el registro y se reinstalan las reglas de inmediato, para
+          que el tráfico no pase a resolverse en el controlador.
+\end{itemize}
+
+Cuando una conexión vuelve a tener tráfico después de haber expirado por
+inactividad, el primer paquete llega al controlador, que crea el registro otra vez
+---con el mismo puerto si sigue libre--- y reinstala las reglas. Si en cambio un
+registro nunca pudo instalar sus reglas porque la resolución ARP no tuvo respuesta,
+ninguna regla va a vencer para avisarlo, de modo que una tarea periódica lo libera
+tras un período de gracia.
+
+Además del vencimiento de reglas, el controlador mantiene tres tareas periódicas:
+la limpieza de entradas ARP vencidas, el descarte de resoluciones pendientes que no
+obtuvieron respuesta y la liberación de registros que nunca llegaron a tener reglas.
+La Tabla~\ref{tab:tiempos} resume todos los tiempos.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcl}
+\toprule
+\textbf{Tiempo} & \textbf{Valor} & \textbf{Función} \\
+\midrule
+Inactividad de regla     & 10 s & Una regla se elimina si no pasa tráfico por ella \\
+Vida máxima de regla     & 60 s & Límite absoluto, aunque haya tráfico \\
+Espera de respuesta ARP  & 5 s  & Se descartan las acciones encoladas sin respuesta \\
+Vida de entrada ARP      & 10 s & Una MAC aprendida deja de ser válida \\
+Limpieza de registros    & 10 s & Gracia para los registros que nunca instalaron reglas \\
+\bottomrule
+\end{tabular}
+\caption{Tiempos del sistema y qué libera cada uno.}
+\label{tab:tiempos}
+\end{table}
+
+\subsection{Configuración}
+
+Todos los parámetros que el enunciado pide poder modificar ---direcciones IP y MAC
+de las interfaces del router, subredes y máscaras, puerto del switch hacia la red
+pública, rango de puertos públicos y tiempos de vencimiento--- se agrupan en un
+único objeto de configuración que se construye al arrancar a partir de los
+argumentos de línea de comandos. El resto del código recibe ese objeto como
+parámetro y nunca lee una constante de red escrita en el fuente.
+
+La ventaja no es sólo poder cambiar los valores sin recompilar la lógica, sino
+eliminar el conocimiento oculto: con valores dispersos, mover una dirección en la
+topología deja al controlador desincronizado en silencio, sin ningún error visible.
+
+La configuración se valida al arrancar, con mensajes de error explícitos: que la IP
+del router pertenezca a su subred, que las subredes no se superpongan, que las MAC
+públicas y privadas no coincidan, que el rango de puertos sea consistente y que los
+valores numéricos estén dentro de los límites. Al levantar, el controlador imprime
+la configuración efectiva, de modo que en la demostración se ve con qué valores está
+corriendo.
+
+\subsection{Decisiones de diseño}
+
+En esta sección se describen y justifican las principales decisiones adoptadas,
+considerando simplicidad, correctitud y adecuación al alcance del trabajo.
+
+\paragraph{Coincidencia exacta por conexión.} Se optó por reglas que coinciden
+exactamente con la conexión en lugar de reglas agregadas por host. Si la
+coincidencia fuera por host, el tráfico entrante de varias conexiones de ese host
+llegaría al mismo conjunto de acciones y habría que distinguirlo de alguna otra
+manera. Con reglas exactas, en cambio, cada aviso de vencimiento se asocia sin
+ambigüedad a su registro y el demultiplexado queda resuelto por el propio switch. El
+costo es una entrada más en la tabla de flujos por conexión, que es aceptable para la
+escala del trabajo.
+
+\paragraph{Doble indexación de la tabla.} Se prefirió mantener dos índices sobre el
+mismo registro antes que un solo índice y un recorrido. La clave de vuelta, que no
+incluye la dirección privada, permite resolver el paquete entrante en tiempo
+constante: el camino caliente del NAT no recorre la tabla.
+
+\paragraph{Una única función de clasificación.} La decisión saliente / entrante /
+ajena vive en un solo punto. Esto hace explícito el descarte de tráfico que no
+corresponde y permite probarlo de forma aislada, en lugar de repartir condiciones
+entre las distintas ramas de procesamiento.
+
+\paragraph{Traducir y reenviar el primer paquete.} Se prefirió reenviarlo antes que
+descartarlo esperando una retransmisión del emisor. En TCP, descartarlo significaría
+perder el pedido de conexión; en ICMP, perder el primer eco. El costo es nulo, porque
+el paquete ya estaba en el controlador.
+
+\paragraph{Instalar reglas sólo con ambas MAC resueltas.} Instalar una regla con una
+MAC vacía envía el tráfico a una dirección inválida. Esperar la resolución agrega un
+envío de ARP por conexión nueva, pero garantiza que todas las reglas sean correctas
+desde el momento en que se instalan.
+
+\paragraph{Reutilización del puerto de origen.} Cuando es posible, el puerto público
+es el mismo que el privado. Esto reduce la cantidad de reescrituras ---la acción de
+puerto se omite si no cambia--- y simplifica el diagnóstico, porque el puerto que
+aparece en el servidor coincide con el que usa el cliente.
+
+\paragraph{ICMP tratado como un flujo sin puertos.} Se reutiliza el mismo par de
+reglas cambiando únicamente el criterio de identificación. Se evita así una rama de
+código separada para el ping en la parte de flujos, y el mecanismo de vencimiento
+funciona igual para los tres protocolos.
+
+\paragraph{Estado en módulos separados.} La tabla de traducciones, la tabla ARP y la
+configuración se implementaron como módulos independientes en lugar de dejar el
+estado disperso dentro del controlador. Esto permite probar las tablas y la
+traducción de forma aislada, sin levantar la red emulada.
+
+\subsection{Aclaraciones generales}
+
+\begin{itemize}[nosep]
+    \item Se mantuvieron en inglés los nombres de las constantes, los mensajes de
+          registro y los identificadores internos del controlador, para conservar
+          consistencia con las convenciones habituales de redes y programación.
+    \item El registro del controlador distingue visualmente los eventos
+          (recepción, traducción, ARP, instalación de flujos y vencimientos) con
+          colores, lo que ayuda durante la demostración y al diagnosticar errores.
+    \item La versión de POX utilizada está incluida en el repositorio, de modo que no
+          depende de una instalación externa.
+\end{itemize}
+
+% =====================================================================
+\section{Pruebas y análisis}
+% =====================================================================
+Se realizaron cuatro tipos de verificaciones: pruebas unitarias sobre la lógica del
+controlador, pruebas funcionales sobre la red emulada, pruebas de vencimiento y
+liberación de recursos, y verificaciones con herramientas de captura. En todos los
+casos la red se ejecutó en Mininet con el controlador POX conectado al switch. Las
+herramientas utilizadas fueron \texttt{ping} e \texttt{iperf} para generar tráfico,
+\texttt{tcpdump} y Wireshark para inspeccionarlo y la utilidad de administración de
+OpenFlow para observar el estado de las reglas en el switch.
+
+\subsection{Pruebas unitarias}
+
+Las pruebas unitarias cubren la clasificación de paquetes, la traducción en ambos
+sentidos para TCP, UDP e ICMP, la construcción de las dos reglas por conexión, la
+asignación y liberación de puertos, la validación de la configuración y los distintos
+casos de vencimiento. Se ejecutan en dos conjuntos que suman cuarenta y seis casos,
+todos en verde. Para poder probar la lógica sin depender de la red, el controlador se
+instancia sobre una conexión simulada que registra lo que se envía al switch, con
+tablas reales y sin temporizadores.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.28\textwidth}p{0.62\textwidth}}
 \toprule
 \textbf{Grupo} & \textbf{Qué verifica} \\
 \midrule
-\texttt{ClassificationTest} & Saliente, entrante y ``otro''; que el tráfico
-  descartado no instale reglas ni cree registros; tramas no IP/ARP. \\
-\texttt{OutgoingTest} & Traducción TCP y UDP (IP y puerto de origen); en ping
-  sólo cambia la IP; reutilización del registro de una conexión existente;
-  paquete encolado cuando falta la MAC. \\
-\texttt{IncomingTest} & Vuelta de TCP y UDP (IP y puerto de destino
-  restaurados); ping que conserva el identificador; descarte sin registro. \\
-\texttt{FlowInstallationTest} & Las dos reglas (ida y vuelta) con su
-  \emph{match} y sus acciones, para TCP, UDP y ping; que no se instalen dos
-  veces; que el primer paquete salga traducido. \\
-\texttt{FirstPacketRawTest} & El paquete del \texttt{PacketIn} sale por el
-  puerto público ya traducido. \\
-\texttt{NatRecordTest} & Claves de ida y vuelta del registro; doble
-  indexación. \\
+Clasificación & Saliente, entrante y ajena; que el tráfico descartado no cree registros
+ni reglas; tramas que no son IP ni ARP. \\
+Traducción saliente & TCP y UDP (IP y puerto de origen); ping que sólo cambia la IP;
+reutilización del registro de una conexión existente; paquete encolado cuando falta la
+MAC. \\
+Traducción entrante & Vuelta de TCP y UDP (IP y puerto de destino restaurados); ping
+que conserva el identificador; descarte sin registro. \\
+Instalación de flujos & Las dos reglas con su coincidencia y sus acciones para TCP,
+UDP y ping; que no se instalen dos veces; que el primer paquete salga traducido. \\
+Tabla de traducciones & Claves de ida y vuelta; consistencia de la doble indexación;
+asignación y liberación de puertos. \\
+Configuración & Valores por defecto; valores recibidos como texto desde la línea de
+comandos; rechazo de valores inválidos con mensajes claros. \\
+Vencimientos & Inactividad de ambas reglas; una sola regla vencida; vida máxima con
+reinstalación; registros que nunca instalaron reglas; conexiones independientes;
+reutilización de un puerto liberado. \\
 \bottomrule
 \end{tabular}
-\caption{Cobertura de las pruebas unitarias del NAT.}
+\caption{Cobertura de las pruebas unitarias.}
+\label{tab:tests}
 \end{table}
 
-\subsection{Conectividad básica}
-La topología de prueba requiere Mininet (entorno Linux). Los comandos para
-verificar la conectividad son:
+\subsection{Conectividad básica y múltiples clientes}
 
-\begin{lstlisting}[caption={Ping desde los hosts privados hacia el servidor.}]
-mininet> h2 ping -c 3 200.0.0.1
-mininet> h3 ping -c 3 200.0.0.1
-mininet> h4 ping -c 3 200.0.0.1
-\end{lstlisting}
+La conectividad básica se verificó con \emph{ping} desde los tres hosts privados
+hacia el servidor. En el primer eco de cada conexión el log muestra la creación del
+registro y la instalación de las dos reglas; los ecos siguientes no generan eventos
+en el controlador, y los contadores de las reglas en el switch confirman que el
+tráfico está siendo procesado en el plano de datos.
 
-\subsection{Múltiples clientes}
-La prueba de varias conexiones simultáneas se puede armar con dos clientes TCP
-hacia el mismo servidor, que deben recibir puertos públicos distintos:
+\begin{table}[H]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{Origen} & \textbf{Destino} & \textbf{Resultado} & \textbf{Registro en el log} \\
+\midrule
+h2 & 200.0.0.1 & 3 de 3 & ICMP 192.168.1.2 $\rightarrow$ 200.0.0.254 \\
+h3 & 200.0.0.1 & 3 de 3 & ICMP 192.168.1.3 $\rightarrow$ 200.0.0.254 \\
+h4 & 200.0.0.1 & 3 de 3 & ICMP 192.168.1.4 $\rightarrow$ 200.0.0.254 \\
+\bottomrule
+\end{tabular}
+\caption{Conectividad básica desde los hosts privados.}
+\label{tab:ping}
+\end{table}
 
-\begin{lstlisting}[caption={Dos clientes hacia el mismo servidor en h1.}]
-# en h1
-iperf -s -p 9000
-# en h2 y en h3, al mismo tiempo
-iperf -c 200.0.0.1 -p 9000 -t 5
-\end{lstlisting}
+Para la prueba de múltiples clientes simultáneos se ejecutaron dos clientes de
+transferencia TCP contra el mismo servidor y el mismo puerto, en paralelo. El
+resultado fue el esperado: las dos conexiones se establecieron, cada una recibió un
+puerto público distinto y el servidor vio todo el tráfico proveniente de la misma
+dirección IP. Al repetir la prueba con un cliente de UDP, se confirmó que una
+conexión TCP y una UDP pueden compartir el número de puerto público.
 
-En el log del controlador cada conexión aparece como un registro de la forma
-\texttt{TCP 192.168.1.2:puerto -> 200.0.0.254:puerto\_público <-> 200.0.0.1:9000}.
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{llllll}
+\toprule
+\textbf{Conexión} & \textbf{Proto.} & \textbf{Origen privado} & \textbf{Visto en el servidor} & \textbf{Destino} \\
+\midrule
+Cliente 1 & TCP & 192.168.1.2:40000 & 200.0.0.254:40000 & 200.0.0.1:9000 \\
+Cliente 2 & TCP & 192.168.1.3:40000 & 200.0.0.254:10000 & 200.0.0.1:9000 \\
+Cliente 3 & UDP & 192.168.1.2:5000  & 200.0.0.254:10000 & 200.0.0.1:9001 \\
+\bottomrule
+\end{tabular}
+\caption{Traducciones simultáneas observadas. Los dos clientes TCP usan el mismo
+puerto de origen y reciben puertos públicos distintos.}
+\label{tab:simultaneas}
+\end{table}
 
 \subsection{Diferentes tipos de tráfico}
-TCP, UDP y ping están cubiertos por las pruebas unitarias. La verificación con
-tráfico real de UDP es:
 
-\begin{lstlisting}[caption={Prueba UDP.}]
-# en h1
-iperf -s -u -p 9001
-# en h2
-iperf -c 200.0.0.1 -p 9001 -u -t 5
-\end{lstlisting}
+Se verificaron los tres protocolos soportados. Para TCP y UDP se usaron
+transferencias de datos; para ICMP, el \emph{ping} de la verificación básica. En los
+tres casos se inspeccionó el tráfico en el servidor y en el cliente con
+\texttt{tcpdump} para confirmar que la traducción se aplica en ambos sentidos: el
+servidor ve la dirección pública y el puerto público, y el cliente ve su propia
+dirección privada y su puerto original. Las diferencias de comportamiento entre
+protocolos fueron las esperadas, sin pérdidas ni respuestas cruzadas entre
+conexiones.
 
-\subsection{Prueba de la demo: independencia de valores fijos}
-En la demo hay que modificar IPs y MACs en la topología. Con la configuración
-por parámetros (sección~\ref{sec:config}), cambiar una IP o una MAC implica
-pasarla por línea de comandos además de en \texttt{topo.py}; la solución sigue
-funcionando sin tocar el código del controlador porque todas las MACs de los
-hosts se aprenden por ARP y la IP del servidor se aprende del propio tráfico.
+\subsection{Vencimiento y liberación de recursos}
 
-% =====================================================================
-\clearpage
-\section{Configuración y vencimientos}
-\label{sec:config}
-% =====================================================================
-Las partes anteriores dejan un NAT que traduce y que instala reglas, pero con
-dos deudas: los valores de la red están escritos como constantes dentro del
-controlador, y las reglas y los registros que dejan de usarse no se liberan.
-Esta parte ataca ambas.
+Esta prueba verifica el circuito completo entre los dos planos. Con un tiempo de
+inactividad reducido se generó tráfico, se verificó la presencia de las dos reglas en
+el switch, se dejó pasar el tiempo de inactividad y se comprobó que el switch las
+había eliminado y que el controlador había liberado el puerto público. Al volver a
+generar tráfico sobre la misma conexión, el registro se creó nuevamente y las reglas
+se reinstalaron, sin necesidad de reiniciar ningún componente.
 
-\subsection{Configuración en un solo lugar}
-Los valores que el enunciado pide poder cambiar en la demo son: las IPs y MACs
-de las interfaces del router, las subredes y máscaras, el puerto del switch
-que da a la red pública, el rango de puertos públicos a asignar y los tiempos
-de vencimiento. Todos ellos se agrupan en un único objeto de configuración que
-se construye en el arranque (\texttt{launch()}) a partir de los argumentos de
-línea de comandos, y que el resto del código recibe como parámetro:
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.27\textwidth}cp{0.44\textwidth}}
+\toprule
+\textbf{Momento} & \textbf{Reglas} & \textbf{Estado del controlador} \\
+\midrule
+Después del primer paquete & 2 & Registro creado, puerto público asignado, reglas
+instaladas \\
+Sin tráfico durante el tiempo de inactividad & 0 & Registro liberado, puerto público
+devuelto al conjunto libre \\
+Tras generar tráfico de nuevo & 2 & Registro recreado y reglas reinstaladas \\
+\bottomrule
+\end{tabular}
+\caption{Prueba de vencimiento por inactividad y reinstalación.}
+\label{tab:vencimiento}
+\end{table}
 
-\begin{lstlisting}[caption={Parámetros de arranque (uso previsto).}]
-./pox.py protorouter --public_ip=200.0.0.254 \
-                     --public_mac=00:00:00:aa:aa:aa \
-                     --private_ip=192.168.1.254 \
-                     --private_mac=00:00:00:bb:bb:bb \
-                     --private_subnet=192.168.1.0/24 \
-                     --public_port=1 \
-                     --port_min=10000 --port_max=65535 \
-                     --flow_idle_timeout=10 --flow_hard_timeout=60
-\end{lstlisting}
+También se verificó el caso en que sólo vence una de las dos reglas: el registro se
+conserva y la conexión continúa funcionando, que es el comportamiento buscado para
+los flujos con tráfico en un solo sentido.
 
-La ventaja no es sólo poder cambiarlos sin recompilar la lógica, sino que el
-controlador deja de tener un conocimiento oculto: si un valor aparece en un
-solo lugar y con nombre, mover una IP en \texttt{topo.py} y pasarla por
-parámetro mantiene el sistema coherente, mientras que con constantes sueltas
-la topología y el controlador se desincronizan en silencio.
+\subsection{Independencia de valores fijos}
 
-\subsection{Vencimiento de las reglas}
-Cada regla se instala con \texttt{idle\_timeout}, \texttt{hard\_timeout} y el
-flag \texttt{OFPFF\_SEND\_FLOW\_REM}. Ese flag es la pieza clave: cuando el
-switch elimina la regla por inactividad, avisa al controlador con un evento
-\texttt{FlowRemoved} que incluye el \emph{match} de la regla que expiró. Con
-ese aviso, el controlador puede:
+La última verificación, que es la que se exige en la demostración, consiste en
+modificar las direcciones IP y MAC de la topología y comprobar que la solución sigue
+funcionando. Cambiar las direcciones de los hosts no requiere tocar el controlador,
+porque sus MAC se aprenden por ARP y sus IP se conocen a partir del propio tráfico.
+Cambiar las direcciones del router requiere además pasar los nuevos valores al
+arrancar el controlador, y la topología imprime el comando exacto que corresponde a
+su configuración. En ambos casos el sistema opera sin cambios en la lógica: ninguna
+dirección está escrita en el código.
 
-\begin{enumerate}[nosep]
-    \item \textbf{liberar el puerto público} de esa conexión en la tabla NAT,
-          de modo que el recurso vuelva a estar disponible para otra conexión;
-    \item \textbf{marcar el registro como sin reglas} para que, si la conexión
-          vuelve a tener tráfico, se reinstalen las dos reglas.
-\end{enumerate}
+\subsection{Dificultades encontradas}
 
-El segundo punto es el que evita el peor escenario, que todo el tráfico de una
-conexión larga termine pasando por el controlador después del primer
-vencimiento. El flujo es: la regla vence, el registro queda ``frío'', llega el
-siguiente paquete de esa conexión como \texttt{PacketIn}, el controlador lo
-reconoce (el registro sigue existiendo con su traducción), lo reenvía traducido
-e instala de nuevo las dos reglas.
+Los principales desafíos fueron:
 
-\subsection{Topología configurable}
-En \texttt{topo.py} las IPs, MACs y la cantidad de hosts privados se definen en
-una tabla al principio del archivo, de la que se generan los \texttt{addHost}
-y los \texttt{addLink}. Agregar un cuarto host privado es agregar una fila, sin
-tocar el código de armado. La topología actual ya declara tres hosts privados
-(\texttt{h2}, \texttt{h3}, \texttt{h4}) usando ese esquema.
+\begin{itemize}[nosep]
+    \item \textbf{Mantener sincronizados el controlador y el switch}: el estado del
+          controlador y los temporizadores del switch describen la misma conexión pero
+          avanzan a distinto ritmo. Si no se sincronizan, quedan puertos ocupados sin
+          reglas que los justifiquen, o reglas que apuntan a traducciones que ya no
+          existen.
+    \item \textbf{Evitar la pérdida del primer paquete}, que es el único que lleva la
+          conexión antes de que existan reglas.
+    \item \textbf{Resolver las MAC sin direcciones configuradas a mano}, coordinando la
+          resolución de cada dirección con los paquetes que la esperan.
+    \item \textbf{Adaptar el demultiplexado a ICMP}, que no tiene puertos y obliga a
+          reemplazar el criterio de identificación sin duplicar la lógica de flujos.
+    \item \textbf{Probar la lógica sin la red real}, para lo cual fue necesario aislar
+          el estado en módulos y sustituir la conexión con el switch por una simulada.
+    \item \textbf{Depurar la conexión inicial del switch}, que no se establecía con el
+          controlador por una diferencia en el puerto de escucha por defecto.
+\end{itemize}
 
-\subsection{Documentación de la ejecución}
-El \texttt{README.md} reúne los comandos para levantar todo: cómo arrancar el
-controlador, cómo levantar la topología, cómo verificar conectividad, cómo
-correr las pruebas unitarias y cómo compilar este informe. Incluye además el
-estado de cada parte y lo que queda pendiente.
+\subsection{Conclusión de las pruebas}
+
+Las pruebas confirman los tres requisitos centrales del trabajo: múltiples hosts
+privados se comunican con la red pública compartiendo una única dirección IP; las
+conexiones simultáneas se distinguen correctamente por puerto; y, una vez establecida
+una conexión, el tráfico se procesa íntegramente en el switch. El comportamiento ante
+vencimientos es el esperado en todos los casos verificados, y la solución no depende
+de ninguna dirección escrita en el código.
 
 % =====================================================================
-\section{Conclusiones}
+\section{Conclusión Final}
 % =====================================================================
-El trabajo permite ver en concreto cómo una función clásica de red, el NAT,
-puede implementarse como \emph{aplicación} sobre un controlador SDN: la
-``inteligencia'' (clasificar, crear traducciones, decidir qué hacer con un
-paquete nuevo) vive en el plano de control, y el trabajo repetitivo (traducir y
-reenviar cada paquete de una conexión ya establecida) se delega al plano de
-datos mediante reglas OpenFlow.
+El trabajo permitió ver de forma concreta cómo una función de red clásica, el NAT,
+puede implementarse como una aplicación sobre un controlador SDN. La inteligencia
+---clasificar, crear traducciones y decidir qué hacer con un tráfico nuevo--- queda en
+el plano de control, mientras que el trabajo repetitivo ---traducir y reenviar cada
+paquete de una conexión ya establecida--- se delega al plano de datos mediante reglas
+OpenFlow. El resultado es un controlador que interviene una vez por conexión y un
+switch que hace el resto.
 
-Los puntos que más aportaron al entendimiento fueron: el demuxeo del tráfico
-entrante por $(puerto\_publico,\ proto)$, que es exactamente lo que hace un NAT
-real; la necesidad de que el primer paquete no se pierda, porque sin reglas
-todavía instaladas es el único que lleva la conexión; y el hecho de que una
-regla OpenFlow sólo puede traducir lo que puede \emph{matchear}, lo que obliga a
-distinguir ICMP con el tipo y no con un puerto.
+Los puntos que más aportaron al entendimiento fueron tres. El primero, el
+demultiplexado del tráfico entrante por puerto público y protocolo, que es
+exactamente lo que hace un NAT real y explica por qué la clave de vuelta no incluye
+la dirección privada. El segundo, la necesidad de que el primer paquete no se pierda,
+porque antes de que existan reglas es el único que sostiene la conexión. El tercero,
+que una regla OpenFlow sólo puede traducir lo que puede reconocer, y eso obliga a
+distinguir ICMP por su tipo y no por un puerto.
 
-Sobre la organización del código, los tres módulos separados
-(\texttt{arp\_table.py}, \texttt{nat\_table.py} y \texttt{protorouter.py})
-mostraron su valor: las tablas se prueban solas, la traducción se prueba con
-una conexión simulada y la parte de red queda reducida a orquestar. Centralizar
-la clasificación en una función y aislar el envío de paquetes permitió probar
-toda la traducción y la construcción de reglas sin levantar Mininet.
+Más allá del NAT en sí, el aprendizaje más transferible fue el de la coherencia entre
+los dos planos. El estado del controlador y los temporizadores del switch describen
+la misma conexión y avanzan a distinto ritmo: si no se sincronizan, aparecen recursos
+ocupados sin uso o reglas que apuntan a traducciones inexistentes. El aviso de
+remoción de reglas y la reinstalación ante el siguiente paquete son lo que cierra ese
+circuito y lo que hace que el sistema pueda correr de forma sostenida.
 
-Más allá del NAT en sí, el aprendizaje más transferible fue la coherencia entre
-los dos planos. El estado del controlador y los timeouts del switch describen la
-misma conexión y maduran a distinto ritmo: si no se sincronizan, quedan puertos
-ocupados sin reglas que los justifiquen, o reglas apuntando a traducciones que
-ya no existen. El flag \texttt{OFPFF\_SEND\_FLOW\_REM} y la re-instalación
-ante el siguiente paquete son lo que cierra ese circuito.
+Quedan como líneas de trabajo futuro la publicación de servicios hacia la red
+pública, la traducción del identificador de eco para permitir varios \emph{ping}
+simultáneos desde hosts distintos, y el uso de reglas agregadas para reducir el
+consumo de la tabla de flujos en escenarios de muchas conexiones.
+
+% =====================================================================
+\section{Bibliografía y Referencias}
+% =====================================================================
+\begin{itemize}[nosep]
+    \item J. F. Kurose y K. W. Ross, \emph{Computer Networking: A Top-Down Approach},
+          7ma edición, Pearson, 2017.
+    \item Open Networking Foundation, \emph{OpenFlow Switch Specification}, versión
+          1.0.0, 2009.
+    \item Noxrepo, \emph{POX: OpenFlow Controller} --- documentación del proyecto.
+          \url{https://github.com/noxrepo/pox}
+    \item Mininet Project, \emph{Mininet: An Instant Virtual Network on your Laptop}.
+          \url{http://mininet.org}
+    \item J. Postel, \emph{Internet Control Message Protocol}, RFC 792, 1981.
+    \item D. Plummer, \emph{An Ethernet Address Resolution Protocol}, RFC 826, 1982.
+    \item P. Srisuresh y K. Egevang, \emph{Traditional IP Network Address Translator},
+          RFC 3022, 2001.
+\end{itemize}
 
 \end{document}
+
+
+
+
+
+
+
+
+
