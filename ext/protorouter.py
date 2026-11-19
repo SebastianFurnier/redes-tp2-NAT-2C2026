@@ -83,8 +83,14 @@ class ProtoRouter(object):
 
     # Revisa la cabecera de ethernet para ver que tipo es.
     def _handle_PacketIn(self, event):
-        if not event.parsed.parsed:
-            log.warning("[DROP] PacketIn con trama no reconocida. POX no pudo decodificar el paquete.")
+        try:
+            parsed = event.parsed
+            ok = parsed.parsed
+        except Exception as e:
+            log.warning(f"[DROP] POX no pudo decodificar el paquete: {e}")
+            return
+        if not ok:
+            log.warning("[DROP] PacketIn con trama no reconocida.")
             return
 
         if event.parsed.type == ethernet.IP_TYPE:
@@ -626,6 +632,7 @@ def launch(public_ip="200.0.0.254",
 
     for line in config.summary():
         log_color(CYAN, f"CONFIG {line}")
+        
 
     def start_switch(event):
         log_color(YELLOW, f"Iniciando ProtoRouter para Switch {event.connection.dpid}")

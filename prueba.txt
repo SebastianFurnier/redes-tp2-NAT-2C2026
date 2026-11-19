@@ -1,4 +1,4 @@
 h1 killall iperf
-h1 iperf-s & iperf-s-u &
-h2 iperf-c 200.0.0.1-n 1K-l 100 &
-h3 iperf-c 200.0.0.1-u-n 1K-l 10
+h1 iperf -s & iperf -s -u &
+h2 iperf -c 200.0.0.1 -n 1K -l 100 &
+h3 iperf -c 200.0.0.1 -u -n 1K -l 10
